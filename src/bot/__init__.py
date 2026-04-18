@@ -1,0 +1,1 @@
+"""Discord EV bet extractor bot package."""

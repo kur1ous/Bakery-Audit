@@ -1,0 +1,31 @@
+# Python
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+
+# Google/service-account credentials
+*service-account*.json
+gen-lang-client-*.json
+
+# Local runtime data
+logs/
+*.log
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.xlsx
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

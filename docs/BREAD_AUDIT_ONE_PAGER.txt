@@ -1,0 +1,91 @@
+Bread Audit - One Pager
+
+Product Summary
+Bread Audit is a Discord bot for extracting and operationalizing sportsbook bet data from screenshots. Users mention the bot with one or more images, review extracted fields, edit if needed, and confirm. Confirmed bets are logged into Google Sheets, matched into opposing bet pairs, cleaned into standardized rows, and later enriched with winner/result/profit outcomes.
+
+Core Value
+- Removes manual data entry from screenshots.
+- Standardizes bet records for analysis.
+- Supports workflow from extraction to post-game outcome resolution.
+
+Primary Data Fields
+- date (yyyy-mm-dd)
+- team (3-letter code)
+- against (3-letter code)
+- odds
+- stake
+- return
+
+Discord User Flow
+1. User posts screenshot(s) and mentions @Bread Audit.
+2. Bot sends images to Gemini for structured extraction.
+3. Bot returns embed with extracted bets and status.
+4. User can edit fields and currency display/toggle.
+5. User clicks Confirm All.
+6. Bot writes confirmed rows to Google Sheets.
+
+Extraction + Validation Behavior
+- Date is normalized to yyyy-mm-dd.
+- If model date is missing/unparseable, bot defaults to current date.
+- Team names are normalized to 3-letter codes for sheet consistency.
+- Low-confidence/missing fields are flagged for review before confirm.
+
+Google Sheets Pipeline
+Sheet 1: confirmed_bets
+- Receives bot-confirmed rows.
+- Source of truth for raw confirmed entries.
+
+Script S1 (on change trigger)
+- Trigger: Spreadsheet On Change.
+- Calls S2 for today's date.
+
+Script S2 (findMatchedPairsForDate)
+- Reads confirmed_bets for target date.
+- Detects opposite-side matchup pairs.
+- Writes unique pairs to matched_pairs.
+
+Sheet 2: matched_pairs
+- Pair-level intermediate table.
+- Can contain multiple pair variants from source rows.
+
+Script S3 (3:30 AM daily trigger)
+- Runs for yesterday's date.
+- Calls S4.
+
+Script S4 (s4_processPairsForDate)
+- Reads matched_pairs for target date.
+- Builds pair objects.
+- Calls S5 for each pair.
+
+Script S5 (s5_writeCleanRow)
+- Writes deduped canonical matchup rows.
+- Produces one clean row per matchup/date in clean_bets.
+
+Sheet 3: clean_bets
+- Standardized, deduped analysis table.
+- Contains Winner, Result, Profit columns (updated later).
+
+Script S6 (4:30 AM daily trigger)
+- Runs for yesterday's date.
+- Calls S7.
+
+Script S7 (s7_resolveWinnersForDate)
+- Fetches ESPN NBA scoreboard API for target date.
+- Resolves winner by matchup.
+- Updates clean_bets Winner/Result/Profit.
+
+Manual Test Mode
+A single TEST_DATE can be set in config.gs.
+Manual runners can use TEST_DATE (or today if blank):
+- runPairsForDate
+- runResolveForDate
+- runAllForDate
+
+Operational Notes
+- Automated production flow relies on S1/S3/S6 triggers.
+- Manual functions are for testing and backfills.
+- Keep TEST_DATE empty for normal day-to-day trigger behavior.
+
+Current Outcome
+Bread Audit now supports end-to-end flow:
+Discord screenshot -> AI extraction -> user confirmation -> sheet logging -> pairing -> clean dedupe -> winner/result/profit enrichment.
