@@ -34,8 +34,11 @@ def test_build_odds_result_embed_uses_site_aware_pick_blocks() -> None:
     assert "underdog/hedge" in embed.description
     roi_field = next(field for field in embed.fields if field.name == "Top 2 ROI")
     assert "**1) Bet POR @ xbet**" in roi_field.value
-    assert "Hedge: `SAS` @ `cloudbet`" in roi_field.value
-    assert "Odds (bet/hedge): `4.99` / `1.92`" in roi_field.value
+    assert "On site `xbet`, bet `b=100.00` (`real`) on `POR`." in roi_field.value
+    assert "On site `cloudbet`, bet `h=259.90` (`real`) on `SAS`." in roi_field.value
+    assert "Either way, the real result will be a `profit` of `139.10` (floor)." in roi_field.value
+    assert "Odds (bet/hedge): `4.99 (xbet)` / `1.92 (cloudbet)`" in roi_field.value
+    assert "Real (bet/hedge/floor): `139.10` / `139.11` / `139.10`" in roi_field.value
     assert "Status: `BET`" in roi_field.value
 
 

@@ -217,9 +217,8 @@ def build_clean_rows(
     candidates: list[OddsCandidate],
     *,
     b_stake: float = 100.0,
-    max_allowed_odds: float = 5.0,
 ) -> tuple[list[list[Any]], list[OddsRecommendation]]:
-    grouped: dict[str, dict[str, OddsCandidate]] = {}
+    grouped: dict[str, dict[str, list[OddsCandidate]]] = {}
 
     for candidate in candidates:
         if candidate.market != "moneyline":
@@ -234,39 +233,28 @@ def build_clean_rows(
         side_key = f"{candidate.team}|{candidate.against}"
 
         sides = grouped.setdefault(matchup_key, {})
-        existing = sides.get(side_key)
-        if not existing or (_to_float(existing.odds) or 0) < odds_value:
-            sides[side_key] = candidate
+        side_candidates = sides.setdefault(side_key, [])
+        side_candidates.append(candidate)
 
     clean_rows: list[list[Any]] = []
     pool: list[OddsRecommendation] = []
     now = datetime.utcnow().isoformat(timespec="seconds")
 
     for sides in grouped.values():
-        for _, left in list(sides.items()):
-            right_key = f"{left.against}|{left.team}"
+        for left_key, left_candidates in list(sides.items()):
+            left_team, left_against = left_key.split("|", 1)
+            right_key = f"{left_against}|{left_team}"
             if right_key not in sides:
                 continue
 
-            right = sides[right_key]
-            if left.team > right.team:
+            if left_key > right_key:
                 continue
 
-            odds_left = _to_float(left.odds)
-            odds_right = _to_float(right.odds)
-            if odds_left is None or odds_right is None or odds_left <= 1 or odds_right <= 1:
+            best_pair = _pick_best_site_pair(left_candidates, sides[right_key], b_stake)
+            if not best_pair:
                 continue
 
-            if odds_left >= odds_right:
-                underdog = left
-                favorite = right
-                odds_u = odds_left
-                odds_f = odds_right
-            else:
-                underdog = right
-                favorite = left
-                odds_u = odds_right
-                odds_f = odds_left
+            underdog, favorite, odds_u, odds_f = best_pair
 
             h_hedge = (b_stake * odds_u) / odds_f if odds_f > 0 else 0.0
             total_bet = b_stake + h_hedge
@@ -275,7 +263,10 @@ def build_clean_rows(
             roi = (net / total_bet) if total_bet else 0.0
             rake = (1 / odds_u) + (1 / odds_f) - 1
 
-            eligible = odds_u < max_allowed_odds and odds_f < max_allowed_odds and net > 0
+            eligible = (
+                _meets_site_min_odds(odds_u, underdog.site)
+                and _meets_site_min_odds(odds_f, favorite.site)
+            )
             recommendation = "BET" if eligible else "NO BET"
 
             clean_rows.append(
@@ -325,8 +316,61 @@ def build_clean_rows(
     return clean_rows, pool
 
 
+def _pick_best_site_pair(
+    left_candidates: list[OddsCandidate],
+    right_candidates: list[OddsCandidate],
+    b_stake: float,
+) -> tuple[OddsCandidate, OddsCandidate, float, float] | None:
+    cross_site_options: list[tuple[tuple[float, float, float, float], tuple[OddsCandidate, OddsCandidate, float, float]]] = []
+    same_site_options: list[tuple[tuple[float, float, float, float], tuple[OddsCandidate, OddsCandidate, float, float]]] = []
+
+    for left in left_candidates:
+        odds_left = _to_float(left.odds)
+        if odds_left is None or odds_left <= 1:
+            continue
+
+        for right in right_candidates:
+            odds_right = _to_float(right.odds)
+            if odds_right is None or odds_right <= 1:
+                continue
+
+            if odds_left >= odds_right:
+                underdog = left
+                favorite = right
+                odds_u = odds_left
+                odds_f = odds_right
+            else:
+                underdog = right
+                favorite = left
+                odds_u = odds_right
+                odds_f = odds_left
+
+            h_hedge = (b_stake * odds_u) / odds_f if odds_f > 0 else 0.0
+            total_bet = b_stake + h_hedge
+            total_return = b_stake * odds_u
+            net = total_return - total_bet
+            roi = (net / total_bet) if total_bet else 0.0
+
+            cross_site = (left.site or "").strip().lower() != (right.site or "").strip().lower()
+            score = (net, roi, odds_u, odds_f)
+            payload = (score, (underdog, favorite, odds_u, odds_f))
+            if cross_site:
+                cross_site_options.append(payload)
+            else:
+                same_site_options.append(payload)
+
+    if cross_site_options:
+        return max(cross_site_options, key=lambda item: item[0])[1]
+    if same_site_options:
+        return max(same_site_options, key=lambda item: item[0])[1]
+    return None
+
 def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecommendation]:
     if not pool:
+        return []
+
+    eligible_pool = [item for item in pool if item.recommendation == "BET"]
+    if not eligible_pool:
         return []
 
     results: list[OddsRecommendation] = []
@@ -337,7 +381,7 @@ def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecom
             "profit": lambda item: item.net,
             "rake": lambda item: item.rake,
         }[metric]
-        ranked = sorted(pool, key=key_fn, reverse=reverse)[:2]
+        ranked = sorted(eligible_pool, key=key_fn, reverse=reverse)[:2]
         labeled: list[OddsRecommendation] = []
         for idx, item in enumerate(ranked, start=1):
             labeled.append(
@@ -368,7 +412,6 @@ def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecom
     results.extend(top("rake", False))
 
     return results
-
 
 def _to_raw_rows(context: OddsPipelineContext, candidates: list[OddsCandidate]) -> list[list[Any]]:
     now = datetime.utcnow().isoformat(timespec="seconds")
@@ -431,17 +474,21 @@ def _apply_clean_formulas(clean_rows: list[list[Any]], start_row: int) -> list[l
     for offset, row in enumerate(clean_rows):
         row_idx = start_row + offset
         local = list(row)
-        # J=b, K=h, L=T, M=r, N=net, O=roi, P=rake, Q=recommendation
+        # H/I=sites, J=b, K=h, L=T, M=r, N=net, O=roi, P=rake, Q=recommendation
         local[10] = f"=IF(G{row_idx}=0,0,(J{row_idx}*F{row_idx})/G{row_idx})"
         local[11] = f"=J{row_idx}+K{row_idx}"
         local[12] = f"=J{row_idx}*F{row_idx}"
         local[13] = f"=M{row_idx}-L{row_idx}"
         local[14] = f"=IF(L{row_idx}=0,0,N{row_idx}/L{row_idx})"
         local[15] = f"=(1/F{row_idx})+(1/G{row_idx})-1"
-        local[16] = f"=IF(AND(F{row_idx}<5,G{row_idx}<5,N{row_idx}>0),\"BET\",\"NO BET\")"
+        local[16] = (
+            f"=IF(AND("
+            f"IF(LOWER(H{row_idx})=\"cloudbet\",F{row_idx}>=1,F{row_idx}>=1.5),"
+            f"IF(LOWER(I{row_idx})=\"cloudbet\",G{row_idx}>=1,G{row_idx}>=1.5)),"
+            "\"BET\",\"NO BET\")"
+        )
         output.append(local)
     return output
-
 
 def _canonical_matchup_key(date: str, team: str, against: str) -> str:
     left, right = sorted([team, against])
@@ -456,3 +503,15 @@ def _to_float(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+def _meets_site_min_odds(odds_value: float, site: str) -> bool:
+    site_key = (site or "").strip().lower()
+    # Client rule:
+    # - cloudbet: any odds acceptable
+    # - all other sites: min odds 1.5
+    min_required = 1.0 if site_key == "cloudbet" else 1.5
+    return odds_value >= min_required
+
+
+
+

@@ -86,15 +86,28 @@ def build_odds_result_embed(recommendations: list[OddsRecommendation], *, insuff
 
 
 def _format_pick_block(pick: OddsRecommendation) -> str:
+    real_if_bet, real_if_hedge, real_floor = _compute_real_outcomes(pick)
+    result_word = "profit" if real_floor >= 0 else "loss"
+    result_amount = abs(real_floor)
+    bet_site = pick.bet_site or "unknown-site"
+    hedge_site = pick.hedge_site or "unknown-site"
+
     return (
-        f"**{pick.rank}) Bet {pick.bet_team} @ {pick.bet_site or 'unknown-site'}**\n"
-        f"Hedge: `{pick.hedge_team}` @ `{pick.hedge_site or 'unknown-site'}`\n"
+        f"**{pick.rank}) Bet {pick.bet_team} @ {bet_site}**\n"
+        f"On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`real`) on `{pick.bet_team}`.\n"
+        f"On site `{hedge_site}`, bet `h={pick.h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.\n"
+        f"Either way, the real result will be a `{result_word}` of `{result_amount:.2f}` (floor).\n"
         f"Date: `{pick.date}`\n"
-        f"Odds (bet/hedge): `{pick.odds_bet:.2f}` / `{pick.odds_hedge:.2f}`\n"
-        f"b: `{pick.b_stake:.2f}` | h: `{pick.h_hedge:.2f}` | T: `{pick.total_bet:.2f}` | r: `{pick.total_return:.2f}`\n"
-        f"Status: `{pick.recommendation}`\nNet: `{pick.net:.2f}` | ROI: `{pick.roi:.2%}` | Rake: `{pick.rake:.4f}`"
+        f"Odds (bet/hedge): `{pick.odds_bet:.2f} ({bet_site})` / `{pick.odds_hedge:.2f} ({hedge_site})`\n"
+        f"T: `{pick.total_bet:.2f}` | r: `{pick.total_return:.2f}` | Real (bet/hedge/floor): `{real_if_bet:.2f}` / `{real_if_hedge:.2f}` / `{real_floor:.2f}`\n"
+        f"Status: `{pick.recommendation}` | Net: `{pick.net:.2f}` | ROI: `{pick.roi:.2%}` | Rake: `{pick.rake:.4f}`"
     )
 
+def _compute_real_outcomes(pick: OddsRecommendation) -> tuple[float, float, float]:
+    real_if_bet = (pick.b_stake * pick.odds_bet) - pick.total_bet
+    real_if_hedge = (pick.h_hedge * pick.odds_hedge) - pick.total_bet
+    real_floor = min(real_if_bet, real_if_hedge)
+    return real_if_bet, real_if_hedge, real_floor
 
 class OddsExtractionView(discord.ui.View):
     def __init__(
@@ -206,3 +219,5 @@ class OddsExtractionView(discord.ui.View):
             embed.set_field_at(status_idx, name="Status", value="Canceled", inline=True)
         embed.set_footer(text="Odds extraction canceled. Send @bot odds with images to restart.")
         await interaction.response.edit_message(embed=embed, view=self)
+
+
