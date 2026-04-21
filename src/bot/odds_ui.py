@@ -14,6 +14,7 @@ def build_odds_review_embed(
     *,
     confirmed: bool,
     failed_files: list[str],
+    odds_mode: str = "both",
 ) -> discord.Embed:
     needs_review = any(item.needs_review for item in candidates)
 
@@ -52,11 +53,17 @@ def build_odds_review_embed(
     missing_count = sum(1 for item in candidates if item.missing_fields)
     embed.add_field(name="Needs Review Rows", value=str(missing_count), inline=True)
     embed.add_field(name="Status", value=status, inline=True)
+    embed.add_field(name="Mode", value=odds_mode.upper(), inline=True)
     embed.set_footer(text="Confirm Odds to write raw/clean/ranked sheets. Cancel to discard.")
     return embed
 
 
-def build_odds_result_embed(recommendations: list[OddsRecommendation], *, insufficient_data: bool) -> discord.Embed:
+def build_odds_result_embed(
+    recommendations: list[OddsRecommendation],
+    *,
+    insufficient_data: bool,
+    odds_mode: str = "both",
+) -> discord.Embed:
     color = discord.Color.green() if recommendations else discord.Color.orange()
     embed = discord.Embed(title="Odds Recommendations", color=color)
     embed.description = "Best underdog/hedge opportunities from this extraction batch."
@@ -68,7 +75,7 @@ def build_odds_result_embed(recommendations: list[OddsRecommendation], *, insuff
 
         out = []
         for pick in picks:
-            out.append(_format_pick_block(pick))
+            out.append(_format_pick_block(pick, odds_mode=odds_mode))
         return "\n\n".join(out)
 
     embed.add_field(name="Top 2 ROI", value=lines("roi"), inline=False)
@@ -85,21 +92,29 @@ def build_odds_result_embed(recommendations: list[OddsRecommendation], *, insuff
     return embed
 
 
-def _format_pick_block(pick: OddsRecommendation) -> str:
+def _format_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") -> str:
     real_if_bet, real_if_hedge, real_floor = _compute_real_outcomes(pick)
-    result_word = "profit" if real_floor >= 0 else "loss"
-    result_amount = abs(real_floor)
+    bonus_h_hedge, bonus_if_bet, bonus_if_hedge, bonus_floor = _compute_bonus_outcomes(pick)
     bet_site = pick.bet_site or "unknown-site"
     hedge_site = pick.hedge_site or "unknown-site"
+    mode = (odds_mode or "both").strip().lower()
+
+    instructions: list[str] = []
+    if mode in ("real", "both"):
+        instructions.extend(_build_real_instruction_lines(pick, bet_site, hedge_site, real_floor))
+    if mode in ("bonus", "both"):
+        instructions.extend(_build_bonus_instruction_lines(pick, bet_site, hedge_site, bonus_floor))
+    instructions_text = "\n".join(instructions)
 
     return (
         f"**{pick.rank}) Bet {pick.bet_team} @ {bet_site}**\n"
-        f"On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`real`) on `{pick.bet_team}`.\n"
-        f"On site `{hedge_site}`, bet `h={pick.h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.\n"
-        f"Either way, the real result will be a `{result_word}` of `{result_amount:.2f}` (floor).\n"
+        f"{instructions_text}\n"
         f"Date: `{pick.date}`\n"
         f"Odds (bet/hedge): `{pick.odds_bet:.2f} ({bet_site})` / `{pick.odds_hedge:.2f} ({hedge_site})`\n"
-        f"T: `{pick.total_bet:.2f}` | r: `{pick.total_return:.2f}` | Real (bet/hedge/floor): `{real_if_bet:.2f}` / `{real_if_hedge:.2f}` / `{real_floor:.2f}`\n"
+        f"T: `{pick.total_bet:.2f}` | r: `{pick.total_return:.2f}`\n"
+        f"Real (bet/hedge/floor): `{real_if_bet:.2f}` / `{real_if_hedge:.2f}` / `{real_floor:.2f}`\n"
+        f"Bonus h (optimized): `{bonus_h_hedge:.2f}`\n"
+        f"Bonus (bet/hedge/floor): `{bonus_if_bet:.2f}` / `{bonus_if_hedge:.2f}` / `{bonus_floor:.2f}`\n"
         f"Status: `{pick.recommendation}` | Net: `{pick.net:.2f}` | ROI: `{pick.roi:.2%}` | Rake: `{pick.rake:.4f}`"
     )
 
@@ -108,6 +123,64 @@ def _compute_real_outcomes(pick: OddsRecommendation) -> tuple[float, float, floa
     real_if_hedge = (pick.h_hedge * pick.odds_hedge) - pick.total_bet
     real_floor = min(real_if_bet, real_if_hedge)
     return real_if_bet, real_if_hedge, real_floor
+
+
+def _compute_bonus_outcomes(pick: OddsRecommendation) -> tuple[float, float, float, float]:
+    # Free-bet style assumption: bonus stake is not returned when bet side wins.
+    bonus_h_hedge = 0.0
+    if pick.odds_hedge > 0:
+        bonus_h_hedge = (pick.b_stake * (pick.odds_bet - 1.0)) / pick.odds_hedge
+    bonus_if_bet = (pick.b_stake * (pick.odds_bet - 1.0)) - bonus_h_hedge
+    bonus_if_hedge = (bonus_h_hedge * pick.odds_hedge) - bonus_h_hedge
+    bonus_floor = min(bonus_if_bet, bonus_if_hedge)
+    return bonus_h_hedge, bonus_if_bet, bonus_if_hedge, bonus_floor
+
+
+def _build_real_instruction_lines(
+    pick: OddsRecommendation,
+    bet_site: str,
+    hedge_site: str,
+    floor_value: float,
+) -> list[str]:
+    result_word = "profit" if floor_value >= 0 else "loss"
+    result_amount = abs(floor_value)
+    real_total = pick.total_bet
+    real_pct = _percent_of_total(floor_value, real_total)
+    return [
+        f"REAL: On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`real`) on `{pick.bet_team}`.",
+        f"REAL: On site `{hedge_site}`, bet `h={pick.h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.",
+        (
+            f"REAL: Either way, result is `{result_word}` `{result_amount:.2f}` (floor), "
+            f"`{real_pct}` of total real money bet `{real_total:.2f}`."
+        ),
+    ]
+
+
+def _build_bonus_instruction_lines(
+    pick: OddsRecommendation,
+    bet_site: str,
+    hedge_site: str,
+    floor_value: float,
+) -> list[str]:
+    bonus_h_hedge, _, _, _ = _compute_bonus_outcomes(pick)
+    result_word = "profit" if floor_value >= 0 else "loss"
+    result_amount = abs(floor_value)
+    real_total = bonus_h_hedge
+    real_pct = _percent_of_total(floor_value, real_total)
+    return [
+        f"BONUS: On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`bonus`) on `{pick.bet_team}`.",
+        f"BONUS: On site `{hedge_site}`, bet `h={bonus_h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.",
+        (
+            f"BONUS: Either way, result is `{result_word}` `{result_amount:.2f}` (guaranteed worst-case), "
+            f"`{real_pct}` of total real cash bet `{real_total:.2f}` (bonus excluded)."
+        ),
+    ]
+
+
+def _percent_of_total(value: float, total: float) -> str:
+    if total == 0:
+        return "0.00%"
+    return f"{(value / total):.2%}"
 
 class OddsExtractionView(discord.ui.View):
     def __init__(
@@ -169,10 +242,12 @@ class OddsExtractionView(discord.ui.View):
             pending.candidates,
             confirmed=True,
             failed_files=pending.failed_files,
+            odds_mode=pending.odds_mode,
         )
         result_embed = build_odds_result_embed(
             result.recommendations,
             insufficient_data=len(result.recommendations) < 6,
+            odds_mode=pending.odds_mode,
         )
 
         for child in self.children:
@@ -212,6 +287,7 @@ class OddsExtractionView(discord.ui.View):
             pending.candidates,
             confirmed=False,
             failed_files=pending.failed_files,
+            odds_mode=pending.odds_mode,
         )
         embed.color = discord.Color.dark_grey()
         status_idx = next((i for i, f in enumerate(embed.fields) if f.name == "Status"), None)

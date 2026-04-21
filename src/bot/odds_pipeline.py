@@ -322,7 +322,6 @@ def _pick_best_site_pair(
     b_stake: float,
 ) -> tuple[OddsCandidate, OddsCandidate, float, float] | None:
     cross_site_options: list[tuple[tuple[float, float, float, float], tuple[OddsCandidate, OddsCandidate, float, float]]] = []
-    same_site_options: list[tuple[tuple[float, float, float, float], tuple[OddsCandidate, OddsCandidate, float, float]]] = []
 
     for left in left_candidates:
         odds_left = _to_float(left.odds)
@@ -356,13 +355,9 @@ def _pick_best_site_pair(
             payload = (score, (underdog, favorite, odds_u, odds_f))
             if cross_site:
                 cross_site_options.append(payload)
-            else:
-                same_site_options.append(payload)
 
     if cross_site_options:
         return max(cross_site_options, key=lambda item: item[0])[1]
-    if same_site_options:
-        return max(same_site_options, key=lambda item: item[0])[1]
     return None
 
 def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecommendation]:

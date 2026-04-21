@@ -36,9 +36,14 @@ def test_build_odds_result_embed_uses_site_aware_pick_blocks() -> None:
     assert "**1) Bet POR @ xbet**" in roi_field.value
     assert "On site `xbet`, bet `b=100.00` (`real`) on `POR`." in roi_field.value
     assert "On site `cloudbet`, bet `h=259.90` (`real`) on `SAS`." in roi_field.value
-    assert "Either way, the real result will be a `profit` of `139.10` (floor)." in roi_field.value
+    assert "REAL: Either way, result is `profit` `139.10` (floor)," in roi_field.value
     assert "Odds (bet/hedge): `4.99 (xbet)` / `1.92 (cloudbet)`" in roi_field.value
     assert "Real (bet/hedge/floor): `139.10` / `139.11` / `139.10`" in roi_field.value
+    assert "BONUS: On site `cloudbet`, bet `h=207.81` (`real`) on `SAS`." in roi_field.value
+    assert "BONUS: Either way, result is `profit` `191.19` (guaranteed worst-case)," in roi_field.value
+    assert "of total real cash bet `207.81` (bonus excluded)." in roi_field.value
+    assert "Bonus h (optimized): `207.81`" in roi_field.value
+    assert "Bonus (bet/hedge/floor): `191.19` / `191.19` / `191.19`" in roi_field.value
     assert "Status: `BET`" in roi_field.value
 
 

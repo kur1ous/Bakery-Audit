@@ -200,10 +200,12 @@ class EVBetBot(commands.Bot):
             )
             return
 
+        odds_mode = _parse_odds_mode(message.content)
         embed = build_odds_review_embed(
             candidates,
             confirmed=False,
             failed_files=failed_files,
+            odds_mode=odds_mode,
         )
         placeholder = await message.reply(embed=embed, mention_author=False)
 
@@ -213,6 +215,7 @@ class EVBetBot(commands.Bot):
                 invoker_id=message.author.id,
                 candidates=candidates,
                 failed_files=failed_files,
+                odds_mode=odds_mode,
             ),
         )
 
@@ -279,9 +282,22 @@ def _help_message() -> str:
         "3. Use `Edit Selected` (and `Edit Return`) before pressing `Confirm All`.\n"
         "4. Use `Switch Bet X to CAD/USD` to set the selected bet currency tag.\n"
         "5. Confirm writes one row per bet into your configured spreadsheet log.\n"
-        "6. Use `@bot odds` with screenshot(s) to run moneyline odds automation (raw -> clean -> ranked).\n"
+        "6. Use `@bot odds [real|bonus|both]` with screenshot(s) to run moneyline odds automation.\n"
+        "   Example: `@bot odds real` or `@bot odds both` (default: both).\n"
         "7. Use `@bot devlog` to get the full development log."
     )
+
+
+def _parse_odds_mode(content: str) -> str:
+    normalized = _normalize_mention_text(content)
+    parts = normalized.split()
+    if not parts or parts[0] != "odds":
+        return "both"
+
+    for token in parts[1:]:
+        if token in ("real", "bonus", "both"):
+            return token
+    return "both"
 
 
 def _image_attachments(attachments: Iterable[discord.Attachment]) -> list[discord.Attachment]:

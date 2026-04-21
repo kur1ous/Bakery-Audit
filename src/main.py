@@ -19,6 +19,7 @@ def main() -> None:
     extraction_service = GeminiExtractionService(
         api_key=settings.gemini_api_key,
         model_name=settings.gemini_model,
+        api_keys=settings.gemini_api_keys,
     )
     confirmation_logger = create_confirmation_logger(
         backend=settings.confirm_log_backend,

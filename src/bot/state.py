@@ -20,6 +20,7 @@ class PendingOddsBatch:
     invoker_id: int
     candidates: list[OddsCandidate]
     failed_files: list[str] = field(default_factory=list)
+    odds_mode: str = "both"
     confirmed: bool = False
 
 

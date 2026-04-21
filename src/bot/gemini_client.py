@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from google import genai
 from google.genai import types
@@ -85,22 +85,25 @@ class GeminiExtractionError(RuntimeError):
 
 
 class GeminiExtractionService:
-    def __init__(self, api_key: str, model_name: str) -> None:
-        self._client = genai.Client(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str,
+        *,
+        api_keys: list[str] | tuple[str, ...] | None = None,
+        client_factory: Callable[..., Any] = genai.Client,
+    ) -> None:
+        keys = _normalize_api_keys(api_key=api_key, api_keys=api_keys)
+        self._clients = [client_factory(api_key=key) for key in keys]
         self._model_name = model_name
 
     def extract_from_image(self, image_bytes: bytes, mime_type: str) -> BetExtraction:
         try:
-            response = self._client.models.generate_content(
-                model=self._model_name,
+            response = self._generate_content_with_failover(
                 contents=[
                     PROMPT,
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    response_mime_type="application/json",
-                ),
+                ]
             )
         except Exception as exc:
             raise GeminiExtractionError(f"Gemini request failed: {exc}") from exc
@@ -120,16 +123,11 @@ class GeminiExtractionService:
 
     def extract_odds_from_image(self, image_bytes: bytes, mime_type: str, source_image: str = "") -> OddsExtractionBatch:
         try:
-            response = self._client.models.generate_content(
-                model=self._model_name,
+            response = self._generate_content_with_failover(
                 contents=[
                     ODDS_PROMPT,
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    response_mime_type="application/json",
-                ),
+                ]
             )
         except Exception as exc:
             raise GeminiExtractionError(f"Gemini request failed: {exc}") from exc
@@ -155,6 +153,30 @@ class GeminiExtractionService:
             LOGGER.exception("Failed to parse Gemini odds payload")
             raise GeminiExtractionError(f"Gemini response parse failed: {exc}") from exc
 
+    def _generate_content_with_failover(self, *, contents: list[Any]) -> Any:
+        last_error: Exception | None = None
+        for idx, client in enumerate(self._clients):
+            try:
+                return client.models.generate_content(
+                    model=self._model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=0,
+                        response_mime_type="application/json",
+                    ),
+                )
+            except Exception as exc:
+                last_error = exc
+                has_next = idx < (len(self._clients) - 1)
+                if has_next and _is_retryable_key_error(exc):
+                    LOGGER.warning("Gemini key %d failed with retryable error; trying fallback key", idx + 1)
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("No Gemini clients configured")
+
 
 def _extract_json(raw: str) -> dict:
     raw = raw.strip()
@@ -165,3 +187,35 @@ def _extract_json(raw: str) -> dict:
     if not match:
         raise ValueError("No JSON object found in Gemini response")
     return json.loads(match.group(0))
+
+
+def _normalize_api_keys(*, api_key: str, api_keys: list[str] | tuple[str, ...] | None) -> list[str]:
+    keys: list[str] = []
+
+    def _append(value: str) -> None:
+        key = (value or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+
+    _append(api_key)
+    for value in api_keys or []:
+        _append(value)
+
+    if not keys:
+        raise ValueError("At least one Gemini API key is required")
+
+    return keys
+
+
+def _is_retryable_key_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_markers = (
+        "quota",
+        "resource_exhausted",
+        "rate limit",
+        "too many requests",
+        "429",
+        "unavailable",
+        "temporarily unavailable",
+    )
+    return any(marker in text for marker in retry_markers)

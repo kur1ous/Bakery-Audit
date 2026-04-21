@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 class Settings:
     discord_token: str
     gemini_api_key: str
+    gemini_api_keys: tuple[str, ...]
     gemini_model: str = "gemini-2.5-flash"
     log_level: str = "INFO"
     confirm_log_backend: str = "excel"
@@ -29,6 +30,12 @@ def load_settings() -> Settings:
 
     discord_token = os.getenv("DISCORD_TOKEN", "").strip()
     gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    gemini_api_key_2 = os.getenv("GEMINI_API_KEY_2", "").strip()
+    gemini_api_key2 = os.getenv("GEMINI_API_KEY2", "").strip()
+    gemini_api_key_secondary = os.getenv("GEMINI_API_KEY_SECONDARY", "").strip()
+    gemini_api_key_fallback = os.getenv("GEMINI_API_KEY_FALLBACK", "").strip()
+    gemini_api_key_backup = os.getenv("GEMINI_API_KEY_BACKUP", "").strip()
+    gemini_api_keys_csv = os.getenv("GEMINI_API_KEYS", "").strip()
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     log_level = os.getenv("LOG_LEVEL", "INFO").strip() or "INFO"
 
@@ -62,9 +69,27 @@ def load_settings() -> Settings:
         joined = ", ".join(missing)
         raise RuntimeError(f"Missing required environment variables: {joined}")
 
+    ordered_keys: list[str] = []
+
+    def _append_key(key: str) -> None:
+        value = key.strip()
+        if value and value not in ordered_keys:
+            ordered_keys.append(value)
+
+    _append_key(gemini_api_key)
+    _append_key(gemini_api_key_2)
+    _append_key(gemini_api_key2)
+    _append_key(gemini_api_key_secondary)
+    _append_key(gemini_api_key_fallback)
+    _append_key(gemini_api_key_backup)
+    if gemini_api_keys_csv:
+        for key in gemini_api_keys_csv.split(","):
+            _append_key(key)
+
     return Settings(
         discord_token=discord_token,
         gemini_api_key=gemini_api_key,
+        gemini_api_keys=tuple(ordered_keys),
         gemini_model=gemini_model,
         log_level=log_level,
         confirm_log_backend=confirm_log_backend,
