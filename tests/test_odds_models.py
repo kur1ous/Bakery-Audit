@@ -22,6 +22,7 @@ def test_odds_candidate_normalizes_date_team_and_site() -> None:
     assert candidate.market == "moneyline"
     assert candidate.site == "cloudbet"
     assert candidate.missing_fields == []
+    assert candidate.total_line == ""
 
 
 def test_odds_candidate_missing_fields_and_default_date() -> None:
@@ -38,3 +39,22 @@ def test_odds_candidate_missing_fields_and_default_date() -> None:
     assert "team" in candidate.missing_fields
     assert "odds" in candidate.missing_fields
     assert candidate.needs_review is True
+
+
+def test_odds_candidate_total_market_and_line_are_normalized() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "2026-04-20",
+            "team": "Toronto Raptors",
+            "against": "Cleveland Cavaliers",
+            "odds": "1.93",
+            "market": "OVER",
+            "total_line": "222.5 pts",
+            "site": "cloudbet.com",
+        }
+    )
+
+    assert candidate.market == "total_over"
+    assert candidate.total_line == "222.5"
+    assert candidate.team == "TOR"
+    assert candidate.against == "CLE"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.bot.odds_models import OddsCandidate
-from src.bot.odds_pipeline import OddsPipelineContext, build_clean_rows, select_top_recommendations
+from src.bot.odds_pipeline import OddsPipelineContext, _to_raw_rows, build_clean_rows, select_top_recommendations
 
 
 def _ctx() -> OddsPipelineContext:
@@ -74,4 +74,46 @@ def test_build_clean_rows_prefers_cross_site_pair_when_available() -> None:
     assert len(pool) == 1
     assert rows[0][7] != rows[0][8]
     assert pool[0].bet_site != pool[0].hedge_site
+
+
+def test_build_clean_rows_ignores_totals_candidates() -> None:
+    candidates = [
+        OddsCandidate(date="2026-04-20", team="TOR", against="CLE", odds="3.75", market="moneyline", site="xbet"),
+        OddsCandidate(date="2026-04-20", team="CLE", against="TOR", odds="1.28", market="moneyline", site="cloudbet"),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+    ]
+
+    rows, pool = build_clean_rows(_ctx(), candidates)
+    assert len(rows) == 1
+    assert len(pool) == 1
+    assert rows[0][3] == "TOR"
+    assert rows[0][4] == "CLE"
+
+
+def test_to_raw_rows_writes_only_moneyline_candidates() -> None:
+    candidates = [
+        OddsCandidate(date="2026-04-20", team="TOR", against="CLE", odds="3.75", market="moneyline", site="xbet"),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+    ]
+
+    rows = _to_raw_rows(_ctx(), candidates)
+    assert len(rows) == 1
+    assert rows[0][9] == "3.75"
+    assert rows[0][10] == "moneyline"
 

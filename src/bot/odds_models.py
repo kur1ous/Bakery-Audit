@@ -15,6 +15,7 @@ class OddsCandidate(BaseModel):
     against: str = ""
     odds: str = ""
     market: str = "moneyline"
+    total_line: str = ""
     site: str = ""
     source_image: str = ""
     confidence: float = 0.0
@@ -22,16 +23,37 @@ class OddsCandidate(BaseModel):
     readable_summary: str = ""
     raw_text: str = ""
 
-    @field_validator("date", "team", "against", "market", "site", "source_image", mode="before")
+    @field_validator("date", "team", "against", "site", "source_image", mode="before")
     @classmethod
     def _normalize_text(cls, value: Any) -> str:
         if value is None:
             return ""
         return str(value).strip()
 
+    @field_validator("market", mode="before")
+    @classmethod
+    def _normalize_market(cls, value: Any) -> str:
+        raw = "" if value is None else str(value).strip().lower()
+        if not raw:
+            return "moneyline"
+
+        compact = raw.replace("-", "_").replace(" ", "_")
+        if compact in {"moneyline", "money_line", "ml"}:
+            return "moneyline"
+        if "over" in compact:
+            return "total_over"
+        if "under" in compact:
+            return "total_under"
+        return "moneyline"
+
     @field_validator("odds", mode="before")
     @classmethod
     def _normalize_odds(cls, value: Any) -> str:
+        return normalize_odds(value)
+
+    @field_validator("total_line", mode="before")
+    @classmethod
+    def _normalize_total_line(cls, value: Any) -> str:
         return normalize_odds(value)
 
     @field_validator("missing_fields", mode="before")
@@ -72,7 +94,9 @@ class OddsCandidate(BaseModel):
         if not self.readable_summary:
             self.readable_summary = (
                 f"{self.team or 'UNK'} vs {self.against or 'UNK'} "
-                f"moneyline at {self.odds or 'unknown'} on {self.date} ({self.site or 'unknown site'})."
+                f"{self.market} at {self.odds or 'unknown'}"
+                f"{f' (line {self.total_line})' if self.total_line else ''} "
+                f"on {self.date} ({self.site or 'unknown site'})."
             )
 
         return self

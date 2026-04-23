@@ -412,6 +412,8 @@ def _to_raw_rows(context: OddsPipelineContext, candidates: list[OddsCandidate]) 
     now = datetime.utcnow().isoformat(timespec="seconds")
     rows: list[list[Any]] = []
     for candidate in candidates:
+        if candidate.market != "moneyline":
+            continue
         rows.append(
             [
                 now,

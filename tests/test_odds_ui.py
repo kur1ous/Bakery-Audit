@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from src.bot.odds_pipeline import OddsRecommendation
-from src.bot.odds_ui import build_odds_result_embed, build_odds_review_embed
+from src.bot.odds_ui import (
+    OddsResultPaginationView,
+    build_odds_result_embed,
+    build_odds_review_embed,
+    build_over_under_embed,
+    build_over_under_recommendations,
+)
 from src.bot.odds_models import OddsCandidate
 
 
@@ -57,3 +65,188 @@ def test_build_odds_review_embed_has_site_breakdown() -> None:
     site_field = next(field for field in embed.fields if field.name == "Site Breakdown")
     assert "cloudbet: 1" in site_field.value
     assert "xbet: 1" in site_field.value
+
+
+def test_build_over_under_embed_renders_ranked_recommendations() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.90",
+            market="total_under",
+            total_line="222.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-21",
+            team="NYK",
+            against="ATL",
+            odds="1.91",
+            market="total_over",
+            total_line="217.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-21",
+            team="NYK",
+            against="ATL",
+            odds="1.92",
+            market="total_under",
+            total_line="217.5",
+            site="xbet",
+        ),
+    ]
+
+    embed = build_over_under_embed(candidates)
+
+    assert embed.title == "Over/Under Recommendations"
+    roi_field = next(field for field in embed.fields if field.name == "Top 2 ROI")
+    assert "OVER" in roi_field.value or "UNDER" in roi_field.value
+    assert "Odds (bet/hedge)" in roi_field.value
+    assert "Status: `BET`" in roi_field.value
+    debug_field = next(field for field in embed.fields if field.name == "Debug")
+    assert "totals_rows=" in debug_field.value
+    assert "ranked_count=" in debug_field.value
+
+
+def test_build_over_under_embed_handles_no_rows() -> None:
+    embed = build_over_under_embed(
+        [OddsCandidate(date="2026-04-20", team="TOR", against="CLE", odds="3.75", market="moneyline", site="xbet")]
+    )
+    assert embed.description == "No Over/Under rows extracted from this batch."
+    debug_field = next(field for field in embed.fields if field.name == "Debug")
+    assert "totals_rows=0" in debug_field.value
+
+
+@pytest.mark.asyncio
+async def test_odds_result_pagination_view_toggles_button_state() -> None:
+    recs = [
+        OddsRecommendation(
+            metric="roi",
+            rank=1,
+            date="2026-04-18",
+            bet_team="POR",
+            hedge_team="SAS",
+            bet_site="xbet",
+            hedge_site="cloudbet",
+            odds_bet=4.99,
+            odds_hedge=1.92,
+            b_stake=100.0,
+            h_hedge=259.9,
+            total_bet=359.9,
+            total_return=499.0,
+            net=139.1,
+            roi=0.38655,
+            rake=-0.2782,
+            recommendation="BET",
+        )
+    ]
+
+    view = OddsResultPaginationView(
+        invoker_user_id=123,
+        recommendations=recs,
+        candidates=[],
+        insufficient_data=True,
+        odds_mode="both",
+    )
+
+    next_button = next(child for child in view.children if getattr(child, "custom_id", "") == "odds:result:next")
+    back_button = next(child for child in view.children if getattr(child, "custom_id", "") == "odds:result:back")
+
+    assert next_button.disabled is False
+    assert back_button.disabled is True
+
+    view.page = 1
+    view._sync_buttons()
+    assert next_button.disabled is True
+    assert back_button.disabled is False
+
+
+def test_build_over_under_recommendations_returns_ranked_metrics() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.90",
+            market="total_under",
+            total_line="222.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-21",
+            team="NYK",
+            against="ATL",
+            odds="1.91",
+            market="total_over",
+            total_line="217.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-21",
+            team="NYK",
+            against="ATL",
+            odds="1.92",
+            market="total_under",
+            total_line="217.5",
+            site="xbet",
+        ),
+    ]
+
+    ranked = build_over_under_recommendations(candidates)
+    assert len(ranked) >= 3
+    assert {item.metric for item in ranked} == {"roi", "profit", "rake"}
+    assert all(item.recommendation == "BET" for item in ranked)
+
+
+def test_build_over_under_embed_field_values_respect_discord_limit() -> None:
+    candidates: list[OddsCandidate] = []
+    for idx in range(1, 9):
+        date = f"2026-04-{idx + 10:02d}"
+        team = f"T{idx:02d}A"
+        against = f"T{idx:02d}B"
+        candidates.append(
+            OddsCandidate(
+                date=date,
+                team=team,
+                against=against,
+                odds="1.95",
+                market="total_over",
+                total_line=str(210 + idx),
+                site="cloudbet",
+            )
+        )
+        candidates.append(
+            OddsCandidate(
+                date=date,
+                team=team,
+                against=against,
+                odds="1.90",
+                market="total_under",
+                total_line=str(211 + idx),
+                site="xbet",
+            )
+        )
+
+    embed = build_over_under_embed(candidates, odds_mode="both")
+    for field in embed.fields:
+        assert len(field.value) <= 1024

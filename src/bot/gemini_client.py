@@ -39,7 +39,7 @@ Rules:
 """.strip()
 
 ODDS_PROMPT = """
-You are extracting moneyline odds candidates from sportsbook screenshot(s).
+You are extracting odds candidates from sportsbook screenshot(s).
 Return strict JSON only with no markdown fences and no extra text.
 Schema:
 {
@@ -50,7 +50,8 @@ Schema:
       "team": "string",
       "against": "string",
       "odds": "string|number",
-      "market": "moneyline",
+      "market": "moneyline|total_over|total_under",
+      "total_line": "string|number",
       "site": "string",
       "source_image": "string",
       "confidence": 0.0,
@@ -61,8 +62,10 @@ Schema:
   "readable_summary": "short summary"
 }
 Rules:
-- Extract as many valid moneyline candidates as visible.
-- Ignore spreads/totals/props in this phase.
+- Extract as many valid moneyline and totals (over/under) candidates as visible.
+- Ignore spreads and props.
+- For totals rows, set market to total_over or total_under and set total_line (for example 223.5).
+- For moneyline rows, set market to moneyline and total_line to empty string.
 - Keep team/against as 3-letter codes when possible.
 - Use empty strings for unknown values.
 - confidence is 0..1.
