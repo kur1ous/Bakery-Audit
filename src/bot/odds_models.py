@@ -16,6 +16,7 @@ class OddsCandidate(BaseModel):
     odds: str = ""
     market: str = "moneyline"
     total_line: str = ""
+    spread_line: str = ""
     site: str = ""
     source_image: str = ""
     confidence: float = 0.0
@@ -40,6 +41,8 @@ class OddsCandidate(BaseModel):
         compact = raw.replace("-", "_").replace(" ", "_")
         if compact in {"moneyline", "money_line", "ml"}:
             return "moneyline"
+        if "spread" in compact or "handicap" in compact:
+            return "spread"
         if "over" in compact:
             return "total_over"
         if "under" in compact:
@@ -55,6 +58,27 @@ class OddsCandidate(BaseModel):
     @classmethod
     def _normalize_total_line(cls, value: Any) -> str:
         return normalize_odds(value)
+
+    @field_validator("spread_line", mode="before")
+    @classmethod
+    def _normalize_spread_line(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return ""
+
+        sign = "+"
+        if text.startswith("-"):
+            sign = "-"
+            text = text[1:]
+        elif text.startswith("+"):
+            text = text[1:]
+
+        normalized = normalize_odds(text)
+        if not normalized:
+            return ""
+        return f"{sign}{normalized}"
 
     @field_validator("missing_fields", mode="before")
     @classmethod
@@ -92,10 +116,15 @@ class OddsCandidate(BaseModel):
             self.missing_fields = sorted(canonical)
 
         if not self.readable_summary:
+            line_suffix = ""
+            if self.market == "spread" and self.spread_line:
+                line_suffix = f" (line {self.spread_line})"
+            elif self.total_line:
+                line_suffix = f" (line {self.total_line})"
             self.readable_summary = (
                 f"{self.team or 'UNK'} vs {self.against or 'UNK'} "
                 f"{self.market} at {self.odds or 'unknown'}"
-                f"{f' (line {self.total_line})' if self.total_line else ''} "
+                f"{line_suffix} "
                 f"on {self.date} ({self.site or 'unknown site'})."
             )
 

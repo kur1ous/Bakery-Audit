@@ -35,7 +35,8 @@ def build_odds_review_embed(
     for idx, candidate in enumerate(candidates[:10], start=1):
         line = (
             f"{idx}. {candidate.date} | {candidate.team} vs {candidate.against} | "
-            f"{candidate.market} | {candidate.site or 'unknown-site'} | odds {candidate.odds or '(missing)'}"
+            f"{candidate.market}{_candidate_line_suffix(candidate)} | "
+            f"{candidate.site or 'unknown-site'} | odds {candidate.odds or '(missing)'}"
         )
         preview.append(line)
 
@@ -107,7 +108,7 @@ def build_over_under_embeds(candidates: list[OddsCandidate], *, odds_mode: str =
         return embeds
 
     embeds[0].description = "Best Over/Under hedge opportunities from this extraction batch."
-    picks_by_metric, suppressed_by_metric = _select_unique_ou_picks_by_metric(recommendations)
+    picks_by_metric, suppressed_by_metric = _select_unique_market_picks_by_metric(recommendations)
 
     def lines(metric: str) -> list[str]:
         picks = picks_by_metric.get(metric, [])
@@ -132,7 +133,47 @@ def build_over_under_embeds(candidates: list[OddsCandidate], *, odds_mode: str =
     return embeds
 
 
-def _select_unique_ou_picks_by_metric(
+def build_spread_embed(candidates: list[OddsCandidate], *, odds_mode: str = "both") -> discord.Embed:
+    return build_spread_embeds(candidates, odds_mode=odds_mode)[0]
+
+
+def build_spread_embeds(candidates: list[OddsCandidate], *, odds_mode: str = "both") -> list[discord.Embed]:
+    recommendations = build_spread_recommendations(candidates)
+    spreads = [item for item in candidates if item.market == "spread"]
+    color = discord.Color.green() if recommendations else discord.Color.orange()
+    embeds: list[discord.Embed] = [discord.Embed(title="Spread Recommendations", color=color)]
+
+    if not spreads:
+        embeds[0].description = "No spread rows extracted from this batch."
+        return embeds
+
+    embeds[0].description = "Best spread hedge opportunities from this extraction batch."
+    picks_by_metric, suppressed_by_metric = _select_unique_market_picks_by_metric(recommendations)
+
+    def lines(metric: str) -> list[str]:
+        picks = picks_by_metric.get(metric, [])
+        if not picks:
+            if suppressed_by_metric.get(metric, 0) > 0:
+                return ["game already mentioned"]
+            return ["No picks available"]
+        blocks = [_format_spread_pick_block(pick, odds_mode=odds_mode) for pick in picks]
+        return _split_blocks_to_field_chunks(blocks, limit=1024)
+
+    _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
+
+    if len(recommendations) < 6:
+        _append_embed_field(
+            embeds,
+            name="Note",
+            value="Fewer than 2 games were available for one or more metrics.",
+            color=color,
+        )
+    return embeds
+
+
+def _select_unique_market_picks_by_metric(
     recommendations: list[OddsRecommendation],
 ) -> tuple[dict[str, list[OddsRecommendation]], dict[str, int]]:
     picked_keys: set[str] = set()
@@ -144,7 +185,7 @@ def _select_unique_ou_picks_by_metric(
         selected: list[OddsRecommendation] = []
         suppressed_count = 0
         for item in metric_items:
-            key = _ou_game_key(item)
+            key = _market_game_key(item)
             if key in picked_keys:
                 suppressed_count += 1
                 continue
@@ -158,7 +199,7 @@ def _select_unique_ou_picks_by_metric(
     return out, suppressed
 
 
-def _ou_game_key(item: OddsRecommendation) -> str:
+def _market_game_key(item: OddsRecommendation) -> str:
     teams = sorted([item.bet_team, item.hedge_team])
     return f"{item.date}|{teams[0]}|{teams[1]}"
 
@@ -166,6 +207,143 @@ def _ou_game_key(item: OddsRecommendation) -> str:
 def build_over_under_recommendations(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> list[OddsRecommendation]:
     analysis = _analyze_over_under_candidates(candidates, b_stake=b_stake)
     return analysis["ranked"]
+
+
+def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> list[OddsRecommendation]:
+    grouped: dict[str, dict[str, list[OddsCandidate]]] = {}
+
+    for candidate in candidates:
+        if candidate.market != "spread":
+            continue
+        if not all([candidate.date, candidate.team, candidate.against, candidate.spread_line]):
+            continue
+        odds_value = _to_float(candidate.odds)
+        spread_value = _to_float(candidate.spread_line)
+        if odds_value is None or odds_value <= 1 or spread_value is None:
+            continue
+
+        matchup_left, matchup_right = sorted([candidate.team, candidate.against])
+        key = f"{candidate.date}|{matchup_left}|{matchup_right}"
+        side_key = f"{candidate.team}|{candidate.against}"
+        grouped.setdefault(key, {}).setdefault(side_key, []).append(candidate)
+
+    pool: list[OddsRecommendation] = []
+    for sides in grouped.values():
+        for left_key, left_candidates in list(sides.items()):
+            left_team, left_against = left_key.split("|", 1)
+            right_key = f"{left_against}|{left_team}"
+            if right_key not in sides or left_key > right_key:
+                continue
+
+            best: tuple[tuple[float, float, float, float], OddsRecommendation] | None = None
+            for left in left_candidates:
+                left_odds = _to_float(left.odds)
+                left_spread = _to_float(left.spread_line)
+                if left_odds is None or left_spread is None:
+                    continue
+
+                for right in sides[right_key]:
+                    right_odds = _to_float(right.odds)
+                    right_spread = _to_float(right.spread_line)
+                    if right_odds is None or right_spread is None:
+                        continue
+
+                    if (left.site or "").strip().lower() == (right.site or "").strip().lower():
+                        continue
+
+                    left_h = _optimize_spread_hedge_stake(
+                        b_stake=b_stake,
+                        odds_bet=left_odds,
+                        odds_hedge=right_odds,
+                        bet_spread=left_spread,
+                        hedge_spread=right_spread,
+                    )
+                    left_outcomes = _spread_profit_outcomes(
+                        b_stake=b_stake,
+                        h_hedge=left_h,
+                        odds_bet=left_odds,
+                        odds_hedge=right_odds,
+                        bet_spread=left_spread,
+                        hedge_spread=right_spread,
+                    )
+                    left_floor = min(item.profit for item in left_outcomes)
+
+                    right_h = _optimize_spread_hedge_stake(
+                        b_stake=b_stake,
+                        odds_bet=right_odds,
+                        odds_hedge=left_odds,
+                        bet_spread=right_spread,
+                        hedge_spread=left_spread,
+                    )
+                    right_outcomes = _spread_profit_outcomes(
+                        b_stake=b_stake,
+                        h_hedge=right_h,
+                        odds_bet=right_odds,
+                        odds_hedge=left_odds,
+                        bet_spread=right_spread,
+                        hedge_spread=left_spread,
+                    )
+                    right_floor = min(item.profit for item in right_outcomes)
+
+                    if left_floor >= right_floor:
+                        bet_candidate = left
+                        hedge_candidate = right
+                        odds_bet = left_odds
+                        odds_hedge = right_odds
+                        bet_spread = left_spread
+                        hedge_spread = right_spread
+                        h_hedge = left_h
+                        outcomes = left_outcomes
+                    else:
+                        bet_candidate = right
+                        hedge_candidate = left
+                        odds_bet = right_odds
+                        odds_hedge = left_odds
+                        bet_spread = right_spread
+                        hedge_spread = left_spread
+                        h_hedge = right_h
+                        outcomes = right_outcomes
+
+                    total_bet = b_stake + h_hedge
+                    net = min(item.profit for item in outcomes)
+                    total_return = total_bet + net
+                    roi = (net / total_bet) if total_bet else 0.0
+                    rake = (1 / odds_bet) + (1 / odds_hedge) - 1
+                    recommendation = (
+                        "BET"
+                        if _meets_site_min_odds(odds_bet, bet_candidate.site)
+                        and _meets_site_min_odds(odds_hedge, hedge_candidate.site)
+                        else "NO BET"
+                    )
+
+                    rec = OddsRecommendation(
+                        metric="",
+                        rank=0,
+                        date=bet_candidate.date,
+                        bet_team=f"{bet_candidate.team}/{bet_candidate.against} {bet_candidate.spread_line}",
+                        hedge_team=f"{hedge_candidate.team}/{hedge_candidate.against} {hedge_candidate.spread_line}",
+                        bet_site=bet_candidate.site,
+                        hedge_site=hedge_candidate.site,
+                        odds_bet=round(odds_bet, 4),
+                        odds_hedge=round(odds_hedge, 4),
+                        b_stake=round(b_stake, 2),
+                        h_hedge=round(h_hedge, 2),
+                        total_bet=round(total_bet, 2),
+                        total_return=round(total_return, 2),
+                        net=round(net, 2),
+                        roi=round(roi, 6),
+                        rake=round(rake, 6),
+                        recommendation=recommendation,
+                    )
+                    best_profit = max(item.profit for item in outcomes)
+                    score = (rec.net, rec.roi, best_profit, rec.odds_bet, rec.odds_hedge)
+                    if best is None or score > best[0]:
+                        best = (score, rec)
+
+            if best:
+                pool.append(best[1])
+
+    return select_top_recommendations(pool)
 
 
 def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> dict[str, object]:
@@ -482,6 +660,14 @@ def _embed_char_count(embed: discord.Embed) -> int:
     return total
 
 
+def _candidate_line_suffix(candidate: OddsCandidate) -> str:
+    if candidate.market == "spread" and candidate.spread_line:
+        return f" {candidate.spread_line}"
+    if candidate.total_line:
+        return f" {candidate.total_line}"
+    return ""
+
+
 def _format_ou_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") -> str:
     block = _format_pick_block(pick, odds_mode=odds_mode)
     parsed = _parse_ou_label(pick.bet_team), _parse_ou_label(pick.hedge_team)
@@ -503,6 +689,37 @@ def _format_ou_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") 
     worst = min(outcomes, key=lambda item: item.profit)
     best = max(outcomes, key=lambda item: item.profit)
     middle_outcome = next((item for item in outcomes if "middle" in item.label.lower()), None)
+    middle_text = (
+        f"Middle: `{middle_outcome.label}` -> `{middle_outcome.profit:.2f}`"
+        if middle_outcome
+        else "Middle: `none`"
+    )
+    return (
+        f"{block}\n"
+        f"Worst Case: `{worst.label}` -> `{worst.profit:.2f}`\n"
+        f"Best Case: `{best.label}` -> `{best.profit:.2f}`\n"
+        f"{middle_text}"
+    )
+
+
+def _format_spread_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") -> str:
+    block = _format_pick_block(pick, odds_mode=odds_mode)
+    bet_spread = _parse_trailing_signed_number(pick.bet_team)
+    hedge_spread = _parse_trailing_signed_number(pick.hedge_team)
+    if bet_spread is None or hedge_spread is None:
+        return block
+
+    outcomes = _spread_profit_outcomes(
+        b_stake=pick.b_stake,
+        h_hedge=pick.h_hedge,
+        odds_bet=pick.odds_bet,
+        odds_hedge=pick.odds_hedge,
+        bet_spread=bet_spread,
+        hedge_spread=hedge_spread,
+    )
+    worst = min(outcomes, key=lambda item: item.profit)
+    best = max(outcomes, key=lambda item: item.profit)
+    middle_outcome = next((item for item in outcomes if "window" in item.label.lower()), None)
     middle_text = (
         f"Middle: `{middle_outcome.label}` -> `{middle_outcome.profit:.2f}`"
         if middle_outcome
@@ -649,6 +866,13 @@ def _parse_ou_label(label: str) -> _OUSideMeta | None:
     return _OUSideMeta(side=side, line=line)
 
 
+def _parse_trailing_signed_number(label: str) -> float | None:
+    parts = (label or "").strip().split()
+    if not parts:
+        return None
+    return _to_float(parts[-1])
+
+
 def _optimize_ou_hedge_stake(
     *,
     b_stake: float,
@@ -769,6 +993,112 @@ def _label_total_bucket(total_points: float, line_a: float, line_b: float) -> st
     return f"Middle window ({low:g}, {high:g})"
 
 
+def _optimize_spread_hedge_stake(
+    *,
+    b_stake: float,
+    odds_bet: float,
+    odds_hedge: float,
+    bet_spread: float,
+    hedge_spread: float,
+) -> float:
+    scenarios = _spread_scenarios_for_lines(bet_spread, hedge_spread)
+    if not scenarios:
+        return 0.0
+
+    def profit_at(margin: float, h_hedge: float) -> float:
+        bet_mult = _spread_result_multiplier(margin, bet_spread, odds_bet)
+        hedge_mult = _spread_result_multiplier(-margin, hedge_spread, odds_hedge)
+        payout = (b_stake * bet_mult) + (h_hedge * hedge_mult)
+        return payout - (b_stake + h_hedge)
+
+    candidate_h_values: set[float] = {0.0}
+    linear_models: list[tuple[float, float]] = []
+    for margin in scenarios:
+        bet_mult = _spread_result_multiplier(margin, bet_spread, odds_bet)
+        hedge_mult = _spread_result_multiplier(-margin, hedge_spread, odds_hedge)
+        intercept = (b_stake * bet_mult) - b_stake
+        slope = hedge_mult - 1.0
+        linear_models.append((slope, intercept))
+
+    for i in range(len(linear_models)):
+        s1, c1 = linear_models[i]
+        for j in range(i + 1, len(linear_models)):
+            s2, c2 = linear_models[j]
+            if abs(s1 - s2) < 1e-9:
+                continue
+            h = (c2 - c1) / (s1 - s2)
+            if h >= 0:
+                candidate_h_values.add(h)
+
+    candidate_h_values = {max(0.0, min(h, 10000.0)) for h in candidate_h_values}
+
+    best_h = 0.0
+    best_floor = float("-inf")
+    for h in candidate_h_values:
+        floor = min(profit_at(margin, h) for margin in scenarios)
+        if floor > best_floor:
+            best_floor = floor
+            best_h = h
+    return round(best_h, 2)
+
+
+def _spread_profit_outcomes(
+    *,
+    b_stake: float,
+    h_hedge: float,
+    odds_bet: float,
+    odds_hedge: float,
+    bet_spread: float,
+    hedge_spread: float,
+) -> list[_OUOutcome]:
+    margins = _spread_scenarios_for_lines(bet_spread, hedge_spread)
+    out: list[_OUOutcome] = []
+    for margin in margins:
+        label = _label_spread_bucket(margin, bet_spread, hedge_spread)
+        bet_mult = _spread_result_multiplier(margin, bet_spread, odds_bet)
+        hedge_mult = _spread_result_multiplier(-margin, hedge_spread, odds_hedge)
+        payout = (b_stake * bet_mult) + (h_hedge * hedge_mult)
+        profit = payout - (b_stake + h_hedge)
+        out.append(_OUOutcome(label=label, profit=round(profit, 2)))
+    return out
+
+
+def _spread_scenarios_for_lines(bet_spread: float, hedge_spread: float) -> list[float]:
+    left_threshold = -bet_spread
+    right_threshold = hedge_spread
+    low = min(left_threshold, right_threshold)
+    high = max(left_threshold, right_threshold)
+    values = [low - 1.0, low, (low + high) / 2.0, high, high + 1.0]
+    return sorted({round(value, 4) for value in values})
+
+
+def _spread_result_multiplier(margin: float, spread_line: float, odds: float) -> float:
+    adjusted = margin + spread_line
+    if adjusted > 0:
+        return odds
+    if adjusted < 0:
+        return 0.0
+    return 1.0
+
+
+def _label_spread_bucket(margin: float, bet_spread: float, hedge_spread: float) -> str:
+    left_threshold = -bet_spread
+    right_threshold = hedge_spread
+    low = min(left_threshold, right_threshold)
+    high = max(left_threshold, right_threshold)
+    if margin < low:
+        return f"Below {low:g}"
+    if margin > high:
+        return f"Above {high:g}"
+    if abs(margin - low) < 1e-9 and abs(margin - high) < 1e-9:
+        return f"At {low:g}"
+    if abs(margin - low) < 1e-9:
+        return f"At lower line {low:g}"
+    if abs(margin - high) < 1e-9:
+        return f"At upper line {high:g}"
+    return f"Middle window ({low:g}, {high:g})"
+
+
 class OddsResultPaginationView(discord.ui.View):
     def __init__(
         self,
@@ -806,23 +1136,28 @@ class OddsResultPaginationView(discord.ui.View):
                     odds_mode=self.odds_mode,
                 )
             ]
-        return build_over_under_embeds(self.candidates, odds_mode=self.odds_mode)
+        if self.page == 1:
+            return build_over_under_embeds(self.candidates, odds_mode=self.odds_mode)
+        return build_spread_embeds(self.candidates, odds_mode=self.odds_mode)
 
     def _sync_buttons(self) -> None:
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
                 continue
             if child.custom_id == "odds:result:next":
-                child.disabled = self.page != 0
+                child.disabled = self.page == 2
+                child.label = "Next: Over/Under" if self.page == 0 else "Next: Spread"
             elif child.custom_id == "odds:result:back":
                 child.disabled = self.page == 0
+                child.label = "Back: Recommendations" if self.page == 1 else "Back: Over/Under"
 
     @discord.ui.button(label="Next: Over/Under", style=discord.ButtonStyle.secondary, custom_id="odds:result:next")
     async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not await self._authorize(interaction):
             return
 
-        self.page = 1
+        if self.page < 2:
+            self.page += 1
         self._sync_buttons()
         await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
 
@@ -836,7 +1171,8 @@ class OddsResultPaginationView(discord.ui.View):
         if not await self._authorize(interaction):
             return
 
-        self.page = 0
+        if self.page > 0:
+            self.page -= 1
         self._sync_buttons()
         await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
 

@@ -9,7 +9,9 @@ from src.bot.odds_ui import (
     build_odds_review_embed,
     build_over_under_embed,
     build_over_under_recommendations,
-    _select_unique_ou_picks_by_metric,
+    build_spread_embed,
+    build_spread_recommendations,
+    _select_unique_market_picks_by_metric,
 )
 from src.bot.odds_models import OddsCandidate
 
@@ -161,11 +163,20 @@ async def test_odds_result_pagination_view_toggles_button_state() -> None:
 
     assert next_button.disabled is False
     assert back_button.disabled is True
+    assert next_button.label == "Next: Over/Under"
 
     view.page = 1
     view._sync_buttons()
+    assert next_button.disabled is False
+    assert back_button.disabled is False
+    assert next_button.label == "Next: Spread"
+    assert back_button.label == "Back: Recommendations"
+
+    view.page = 2
+    view._sync_buttons()
     assert next_button.disabled is True
     assert back_button.disabled is False
+    assert back_button.label == "Back: Over/Under"
 
 
 def test_build_over_under_recommendations_returns_ranked_metrics() -> None:
@@ -248,7 +259,7 @@ def test_build_over_under_embed_field_values_respect_discord_limit() -> None:
         assert len(field.value) <= 1024
 
 
-def test_select_unique_ou_picks_by_metric_avoids_repeat_game() -> None:
+def test_select_unique_market_picks_by_metric_avoids_repeat_game() -> None:
     rec_a_roi = OddsRecommendation(
         metric="roi",
         rank=1,
@@ -280,7 +291,7 @@ def test_select_unique_ou_picks_by_metric_avoids_repeat_game() -> None:
         }
     )
 
-    selected, suppressed = _select_unique_ou_picks_by_metric([rec_a_roi, rec_a_profit, rec_b_profit])
+    selected, suppressed = _select_unique_market_picks_by_metric([rec_a_roi, rec_a_profit, rec_b_profit])
     assert len(selected["roi"]) == 1
     assert len(selected["profit"]) == 1
     assert selected["profit"][0].date == "2026-04-21"
@@ -314,3 +325,104 @@ def test_build_over_under_embed_marks_suppressed_metric_as_already_mentioned() -
     rake_field = next(field for field in embed.fields if field.name == "Top 2 Rake (Lowest)")
     assert profit_field.value == "game already mentioned"
     assert rake_field.value == "game already mentioned"
+
+
+def test_build_spread_embed_renders_ranked_recommendations() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-22",
+            team="DAL",
+            against="MIN",
+            odds="1.42",
+            market="spread",
+            spread_line="+2.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="MIN",
+            against="DAL",
+            odds="2.04",
+            market="spread",
+            spread_line="-1.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="EDM",
+            against="ANA",
+            odds="1.67",
+            market="spread",
+            spread_line="+1.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="ANA",
+            against="EDM",
+            odds="2.22",
+            market="spread",
+            spread_line="-1.5",
+            site="cloudbet",
+        ),
+    ]
+
+    embed = build_spread_embed(candidates)
+    assert embed.title == "Spread Recommendations"
+    roi_field = next(field for field in embed.fields if field.name == "Top 2 ROI")
+    assert "Odds (bet/hedge)" in roi_field.value
+    assert "Worst Case:" in roi_field.value
+    assert "Middle:" in roi_field.value
+
+
+def test_build_spread_embed_handles_no_rows() -> None:
+    embed = build_spread_embed(
+        [OddsCandidate(date="2026-04-22", team="DAL", against="MIN", odds="1.42", market="moneyline", site="xbet")]
+    )
+    assert embed.description == "No spread rows extracted from this batch."
+
+
+def test_build_spread_recommendations_returns_ranked_metrics() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-22",
+            team="DAL",
+            against="MIN",
+            odds="1.42",
+            market="spread",
+            spread_line="+2.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="MIN",
+            against="DAL",
+            odds="2.04",
+            market="spread",
+            spread_line="-1.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="EDM",
+            against="ANA",
+            odds="1.67",
+            market="spread",
+            spread_line="+1.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="ANA",
+            against="EDM",
+            odds="2.22",
+            market="spread",
+            spread_line="-1.5",
+            site="cloudbet",
+        ),
+    ]
+
+    ranked = build_spread_recommendations(candidates)
+    assert len(ranked) >= 3
+    assert {item.metric for item in ranked} == {"roi", "profit", "rake"}
+    assert all(item.recommendation == "BET" for item in ranked)

@@ -108,6 +108,9 @@ class EVBetBot(commands.Bot):
                 except GeminiExtractionError as exc:
                     LOGGER.warning("Gemini extraction failed for %s: %s", attachment.filename, exc)
                     failed_files.append(attachment.filename or "unknown-file")
+                    if _is_temporary_gemini_issue(exc):
+                        await message.reply(_gemini_retry_later_message(exc), mention_author=False)
+                        return
                 except Exception:  # pragma: no cover - unexpected runtime path
                     LOGGER.exception("Unexpected extraction failure for %s", attachment.filename)
                     failed_files.append(attachment.filename or "unknown-file")
@@ -189,6 +192,9 @@ class EVBetBot(commands.Bot):
                 except GeminiExtractionError as exc:
                     LOGGER.warning("Gemini odds extraction failed for %s: %s", attachment.filename, exc)
                     failed_files.append(attachment.filename or "unknown-file")
+                    if _is_temporary_gemini_issue(exc):
+                        await message.reply(_gemini_retry_later_message(exc), mention_author=False)
+                        return
                 except Exception:  # pragma: no cover - unexpected runtime path
                     LOGGER.exception("Unexpected odds extraction failure for %s", attachment.filename)
                     failed_files.append(attachment.filename or "unknown-file")
@@ -298,6 +304,29 @@ def _parse_odds_mode(content: str) -> str:
         if token in ("real", "bonus", "both"):
             return token
     return "both"
+
+
+def _is_temporary_gemini_issue(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = (
+        "503",
+        "unavailable",
+        "high demand",
+        "temporarily unavailable",
+        "try again later",
+        "resource_exhausted",
+        "quota",
+        "rate limit",
+        "429",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _gemini_retry_later_message(exc: Exception) -> str:
+    return (
+        "Gemini is currently experiencing availability issues and could not process this request. "
+        f"Details: {exc}. Please try again later."
+    )
 
 
 def _image_attachments(attachments: Iterable[discord.Attachment]) -> list[discord.Attachment]:

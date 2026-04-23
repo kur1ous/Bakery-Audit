@@ -58,3 +58,23 @@ def test_odds_candidate_total_market_and_line_are_normalized() -> None:
     assert candidate.total_line == "222.5"
     assert candidate.team == "TOR"
     assert candidate.against == "CLE"
+
+
+def test_odds_candidate_spread_market_and_signed_line_are_normalized() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "2026-04-22",
+            "team": "Dallas Stars",
+            "against": "Minnesota Wild",
+            "odds": "1.42",
+            "market": "Handicap",
+            "spread_line": "1.5",
+            "site": "xbet.ag",
+        }
+    )
+
+    assert candidate.market == "spread"
+    assert candidate.spread_line == "+1.5"
+    assert candidate.total_line == ""
+    assert candidate.team == "DAL"
+    assert candidate.against == "MIN"

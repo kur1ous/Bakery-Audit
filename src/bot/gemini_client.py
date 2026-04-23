@@ -50,8 +50,9 @@ Schema:
       "team": "string",
       "against": "string",
       "odds": "string|number",
-      "market": "moneyline|total_over|total_under",
+      "market": "moneyline|total_over|total_under|spread",
       "total_line": "string|number",
+      "spread_line": "string|number",
       "site": "string",
       "source_image": "string",
       "confidence": 0.0,
@@ -62,10 +63,11 @@ Schema:
   "readable_summary": "short summary"
 }
 Rules:
-- Extract as many valid moneyline and totals (over/under) candidates as visible.
-- Ignore spreads and props.
-- For totals rows, set market to total_over or total_under and set total_line (for example 223.5).
-- For moneyline rows, set market to moneyline and total_line to empty string.
+- Extract as many valid moneyline, totals (over/under), and spread candidates as visible.
+- Ignore props.
+- For totals rows, set market to total_over or total_under, set total_line (for example 223.5), and set spread_line to empty string.
+- For spread rows, set market to spread, set spread_line to the signed handicap on the selected team (for example +1.5 or -1.5), and set total_line to empty string.
+- For moneyline rows, set market to moneyline and set total_line and spread_line to empty string.
 - Keep team/against as 3-letter codes when possible.
 - Use empty strings for unknown values.
 - confidence is 0..1.
