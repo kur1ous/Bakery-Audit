@@ -92,38 +92,75 @@ def build_odds_result_embed(
 
 
 def build_over_under_embed(candidates: list[OddsCandidate], *, odds_mode: str = "both") -> discord.Embed:
+    return build_over_under_embeds(candidates, odds_mode=odds_mode)[0]
+
+
+def build_over_under_embeds(candidates: list[OddsCandidate], *, odds_mode: str = "both") -> list[discord.Embed]:
     analysis = _analyze_over_under_candidates(candidates)
     totals = analysis["totals"]
     recommendations = analysis["ranked"]
     color = discord.Color.green() if recommendations else discord.Color.orange()
-    embed = discord.Embed(title="Over/Under Recommendations", color=color)
+    embeds: list[discord.Embed] = [discord.Embed(title="Over/Under Recommendations", color=color)]
 
     if not totals:
-        embed.description = "No Over/Under rows extracted from this batch."
-        embed.add_field(name="Debug", value=_format_ou_debug_field(analysis["debug"]), inline=False)
-        return embed
+        embeds[0].description = "No Over/Under rows extracted from this batch."
+        return embeds
 
-    embed.description = "Best Over/Under hedge opportunities from this extraction batch."
+    embeds[0].description = "Best Over/Under hedge opportunities from this extraction batch."
+    picks_by_metric, suppressed_by_metric = _select_unique_ou_picks_by_metric(recommendations)
 
-    def lines(metric: str) -> str:
-        picks = [item for item in recommendations if item.metric == metric]
+    def lines(metric: str) -> list[str]:
+        picks = picks_by_metric.get(metric, [])
         if not picks:
-            return "No picks available"
+            if suppressed_by_metric.get(metric, 0) > 0:
+                return ["game already mentioned"]
+            return ["No picks available"]
         blocks = [_format_ou_pick_block(pick, odds_mode=odds_mode) for pick in picks]
-        return _join_blocks_with_limit(blocks, limit=1024)
+        return _split_blocks_to_field_chunks(blocks, limit=1024)
 
-    embed.add_field(name="Top 2 ROI", value=lines("roi"), inline=False)
-    embed.add_field(name="Top 2 Profit", value=lines("profit"), inline=False)
-    embed.add_field(name="Top 2 Rake (Lowest)", value=lines("rake"), inline=False)
+    _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
 
     if len(recommendations) < 6:
-        embed.add_field(
+        _append_embed_field(
+            embeds,
             name="Note",
             value="Fewer than 2 games were available for one or more metrics.",
-            inline=False,
+            color=color,
         )
-    embed.add_field(name="Debug", value=_format_ou_debug_field(analysis["debug"]), inline=False)
-    return embed
+    return embeds
+
+
+def _select_unique_ou_picks_by_metric(
+    recommendations: list[OddsRecommendation],
+) -> tuple[dict[str, list[OddsRecommendation]], dict[str, int]]:
+    picked_keys: set[str] = set()
+    out: dict[str, list[OddsRecommendation]] = {}
+    suppressed: dict[str, int] = {}
+
+    for metric in ("roi", "profit", "rake"):
+        metric_items = [item for item in recommendations if item.metric == metric]
+        selected: list[OddsRecommendation] = []
+        suppressed_count = 0
+        for item in metric_items:
+            key = _ou_game_key(item)
+            if key in picked_keys:
+                suppressed_count += 1
+                continue
+            selected.append(item)
+            picked_keys.add(key)
+            if len(selected) == 2:
+                break
+        out[metric] = selected
+        suppressed[metric] = suppressed_count
+
+    return out, suppressed
+
+
+def _ou_game_key(item: OddsRecommendation) -> str:
+    teams = sorted([item.bet_team, item.hedge_team])
+    return f"{item.date}|{teams[0]}|{teams[1]}"
 
 
 def build_over_under_recommendations(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> list[OddsRecommendation]:
@@ -333,6 +370,116 @@ def _join_blocks_with_limit(blocks: list[str], *, limit: int) -> str:
             return first
         return f"{first[: max(0, limit - 3)].rstrip()}..."
     return "\n\n".join(out)
+
+
+def _split_blocks_to_field_chunks(blocks: list[str], *, limit: int) -> list[str]:
+    if not blocks:
+        return ["No picks available"]
+
+    chunks: list[str] = []
+    current = ""
+    for raw_block in blocks:
+        block = raw_block.strip()
+        if not block:
+            continue
+
+        if len(block) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_text_by_limit(block, limit=limit))
+            continue
+
+        if not current:
+            current = block
+            continue
+
+        candidate = f"{current}\n\n{block}"
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = block
+
+    if current:
+        chunks.append(current)
+    return chunks or ["No picks available"]
+
+
+def _split_text_by_limit(text: str, *, limit: int) -> list[str]:
+    normalized = text.strip()
+    if len(normalized) <= limit:
+        return [normalized]
+
+    parts = normalized.split("\n")
+    out: list[str] = []
+    current = ""
+    for part in parts:
+        part_text = part.strip()
+        if not part_text:
+            continue
+
+        if len(part_text) > limit:
+            if current:
+                out.append(current)
+                current = ""
+            start = 0
+            while start < len(part_text):
+                segment = part_text[start : start + limit]
+                out.append(segment)
+                start += limit
+            continue
+
+        candidate = part_text if not current else f"{current}\n{part_text}"
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            out.append(current)
+            current = part_text
+
+    if current:
+        out.append(current)
+    return out or [normalized[:limit]]
+
+
+def _append_metric_chunks(
+    embeds: list[discord.Embed],
+    label: str,
+    chunks: list[str],
+    *,
+    color: discord.Colour,
+) -> None:
+    for idx, value in enumerate(chunks, start=1):
+        suffix = "" if idx == 1 else f" (cont. {idx})"
+        _append_embed_field(embeds, name=f"{label}{suffix}", value=value, color=color)
+
+
+def _append_embed_field(
+    embeds: list[discord.Embed],
+    *,
+    name: str,
+    value: str,
+    color: discord.Colour,
+) -> None:
+    if not embeds:
+        embeds.append(discord.Embed(title="Over/Under Recommendations", color=color))
+
+    target = embeds[-1]
+    if len(target.fields) >= 25 or (_embed_char_count(target) + len(name) + len(value)) > 5800:
+        next_idx = len(embeds) + 1
+        target = discord.Embed(title=f"Over/Under Recommendations (cont. {next_idx})", color=color)
+        embeds.append(target)
+
+    target.add_field(name=name, value=value, inline=False)
+
+
+def _embed_char_count(embed: discord.Embed) -> int:
+    total = len(embed.title or "") + len(embed.description or "")
+    for field in embed.fields:
+        total += len(field.name or "") + len(field.value or "")
+    if embed.footer and embed.footer.text:
+        total += len(embed.footer.text)
+    return total
 
 
 def _format_ou_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") -> str:
@@ -650,14 +797,16 @@ class OddsResultPaginationView(discord.ui.View):
             return False
         return True
 
-    def _current_embed(self) -> discord.Embed:
+    def _current_embeds(self) -> list[discord.Embed]:
         if self.page == 0:
-            return build_odds_result_embed(
-                self.recommendations,
-                insufficient_data=self.insufficient_data,
-                odds_mode=self.odds_mode,
-            )
-        return build_over_under_embed(self.candidates, odds_mode=self.odds_mode)
+            return [
+                build_odds_result_embed(
+                    self.recommendations,
+                    insufficient_data=self.insufficient_data,
+                    odds_mode=self.odds_mode,
+                )
+            ]
+        return build_over_under_embeds(self.candidates, odds_mode=self.odds_mode)
 
     def _sync_buttons(self) -> None:
         for child in self.children:
@@ -675,7 +824,7 @@ class OddsResultPaginationView(discord.ui.View):
 
         self.page = 1
         self._sync_buttons()
-        await interaction.response.edit_message(embed=self._current_embed(), view=self)
+        await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
 
     @discord.ui.button(
         label="Back: Recommendations",
@@ -689,7 +838,7 @@ class OddsResultPaginationView(discord.ui.View):
 
         self.page = 0
         self._sync_buttons()
-        await interaction.response.edit_message(embed=self._current_embed(), view=self)
+        await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
 
 
 class OddsExtractionView(discord.ui.View):

@@ -9,6 +9,7 @@ from src.bot.odds_ui import (
     build_odds_review_embed,
     build_over_under_embed,
     build_over_under_recommendations,
+    _select_unique_ou_picks_by_metric,
 )
 from src.bot.odds_models import OddsCandidate
 
@@ -114,9 +115,6 @@ def test_build_over_under_embed_renders_ranked_recommendations() -> None:
     assert "OVER" in roi_field.value or "UNDER" in roi_field.value
     assert "Odds (bet/hedge)" in roi_field.value
     assert "Status: `BET`" in roi_field.value
-    debug_field = next(field for field in embed.fields if field.name == "Debug")
-    assert "totals_rows=" in debug_field.value
-    assert "ranked_count=" in debug_field.value
 
 
 def test_build_over_under_embed_handles_no_rows() -> None:
@@ -124,8 +122,6 @@ def test_build_over_under_embed_handles_no_rows() -> None:
         [OddsCandidate(date="2026-04-20", team="TOR", against="CLE", odds="3.75", market="moneyline", site="xbet")]
     )
     assert embed.description == "No Over/Under rows extracted from this batch."
-    debug_field = next(field for field in embed.fields if field.name == "Debug")
-    assert "totals_rows=0" in debug_field.value
 
 
 @pytest.mark.asyncio
@@ -250,3 +246,71 @@ def test_build_over_under_embed_field_values_respect_discord_limit() -> None:
     embed = build_over_under_embed(candidates, odds_mode="both")
     for field in embed.fields:
         assert len(field.value) <= 1024
+
+
+def test_select_unique_ou_picks_by_metric_avoids_repeat_game() -> None:
+    rec_a_roi = OddsRecommendation(
+        metric="roi",
+        rank=1,
+        date="2026-04-20",
+        bet_team="NYK/ATL UNDER 217.5",
+        hedge_team="NYK/ATL OVER 217.5",
+        bet_site="xbet",
+        hedge_site="cloudbet",
+        odds_bet=1.95,
+        odds_hedge=1.90,
+        b_stake=100.0,
+        h_hedge=102.0,
+        total_bet=202.0,
+        total_return=195.0,
+        net=-7.0,
+        roi=-0.034653,
+        rake=0.039,
+        recommendation="BET",
+    )
+    rec_a_profit = OddsRecommendation(**{**rec_a_roi.__dict__, "metric": "profit", "rank": 1})
+    rec_b_profit = OddsRecommendation(
+        **{
+            **rec_a_roi.__dict__,
+            "metric": "profit",
+            "rank": 2,
+            "date": "2026-04-21",
+            "bet_team": "TOR/CLE OVER 222.5",
+            "hedge_team": "TOR/CLE UNDER 223.5",
+        }
+    )
+
+    selected, suppressed = _select_unique_ou_picks_by_metric([rec_a_roi, rec_a_profit, rec_b_profit])
+    assert len(selected["roi"]) == 1
+    assert len(selected["profit"]) == 1
+    assert selected["profit"][0].date == "2026-04-21"
+    assert suppressed["profit"] == 1
+
+
+def test_build_over_under_embed_marks_suppressed_metric_as_already_mentioned() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.90",
+            market="total_under",
+            total_line="223.5",
+            site="xbet",
+        ),
+    ]
+
+    embed = build_over_under_embed(candidates, odds_mode="both")
+    profit_field = next(field for field in embed.fields if field.name == "Top 2 Profit")
+    rake_field = next(field for field in embed.fields if field.name == "Top 2 Rake (Lowest)")
+    assert profit_field.value == "game already mentioned"
+    assert rake_field.value == "game already mentioned"
