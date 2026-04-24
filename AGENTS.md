@@ -1,124 +1,68 @@
 # AGENTS.md
 
-This file is the working guide for contributors and coding agents in this repository.
+This is the operating guide for coding agents and contributors working in Bakery-Audit. Keep changes small, verified, and easy for the next agent to continue.
 
-## Project Snapshot
+## Mission
 
-- Name: `Bakery-Audit`
-- Runtime: Python Discord bot (`discord.py`)
-- Primary purpose:
-1. Parse bet screenshots from Discord mentions.
-2. Support a standard extraction flow (`@bot` + images).
-3. Support an odds automation flow (`@bot odds [real|bonus|both]` + images).
-4. Write confirmations and odds pipeline outputs to Excel or Google Sheets.
+Bakery-Audit is a Discord bot that turns betting screenshots into reviewed spreadsheet rows. It has two main flows:
 
-## Repo Layout
+1. Standard extraction: `@bot` plus screenshots creates editable bet embeds and logs confirmed rows.
+2. Odds automation: `@bot odds [real|bonus|both]` plus screenshots extracts moneyline candidates, builds cross-site pairs, ranks opportunities, and writes raw, clean, and ranked worksheet tabs.
 
-- Entry point: `src/main.py`
-- Core bot logic: `src/bot/app.py`
-- Config loading: `src/bot/config.py`
-- Gemini integration: `src/bot/gemini_client.py`
-- Standard extraction UI: `src/bot/discord_ui.py`
-- Odds models/pipeline/UI:
-1. `src/bot/odds_models.py`
-2. `src/bot/odds_pipeline.py`
-3. `src/bot/odds_ui.py`
-- Confirmation logging backend: `src/bot/confirmation_log.py`
-- Session state stores: `src/bot/state.py`
-- Tests: `tests/`
-- Apps Script reference docs: `docs/google_apps_script/`
+## Engineering Principles
 
-## Local Development
+- SOLID: keep responsibilities narrow. Parsing, Discord UI, state, and persistence should stay in separate modules.
+- DRY: reuse domain helpers when behavior is truly shared, especially for parsing, normalization, and spreadsheet headers.
+- YAGNI: do not add speculative abstractions, providers, commands, or config flags before a real use case exists.
+- KISS: prefer direct data flow and explicit contracts over clever indirection.
+- Agentic iteration: optimize for fast orientation, small diffs, deterministic tests, and clear rollback points.
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
+## Repository Map
+
+- `src/main.py`: process entry point and dependency wiring.
+- `src/bot/app.py`: Discord event routing and command behavior.
+- `src/bot/config.py`: environment loading and typed settings.
+- `src/bot/gemini_client.py`: Gemini calls and JSON parsing contracts.
+- `src/bot/models.py`: standard extraction models.
+- `src/bot/odds_models.py`: odds automation models.
+- `src/bot/discord_ui.py`: standard extraction embeds, buttons, and modals.
+- `src/bot/odds_ui.py`: odds review embeds and confirmation UI.
+- `src/bot/odds_pipeline.py`: odds cleaning, pairing, ranking, and sheet writes.
+- `src/bot/confirmation_log.py`: Excel and Google Sheets confirmation logging.
+- `src/bot/state.py`: pending Discord interaction state.
+- `tests/`: pytest coverage for command routing, parsing, UI, state, and pipeline behavior.
+- `docs/`: devlog, architecture notes, and project documentation.
+- `apps-script/`: standalone Google Apps Script spreadsheet helpers.
+
+## Local Workflow
+
 ```bash
 pip install -r requirements.txt
-```
-3. Configure environment:
-```bash
 copy .env.example .env
-```
-4. Run:
-```bash
 python -m src.main
-```
-5. Test:
-```bash
 pytest
 ```
 
-## Environment Variables
+Required environment variables:
 
-Required:
-1. `DISCORD_TOKEN`
-2. `GEMINI_API_KEY`
+- `DISCORD_TOKEN`
+- `GEMINI_API_KEY`
 
-Gemini options:
-1. `GEMINI_MODEL` (default `gemini-2.5-flash`)
-2. `GEMINI_API_KEY_2` (optional fallback)
-3. `GEMINI_API_KEY_SECONDARY` (optional fallback)
-4. `GEMINI_API_KEY_BACKUP` (optional fallback)
-5. `GEMINI_API_KEYS` (optional comma-separated list)
+Do not commit `.env`, service account JSON, spreadsheet exports, Discord tokens, Gemini keys, or generated data files.
 
-Logging:
-1. `LOG_LEVEL` (default `INFO`)
+## Command Contracts
 
-Confirmation backend:
-1. `CONFIRM_LOG_BACKEND` = `excel` or `google_sheets`
-2. `CONFIRM_EXCEL_PATH` (excel mode)
-3. `CONFIRM_GOOGLE_SHEET_ID` (google sheets mode)
-4. `CONFIRM_GOOGLE_CREDENTIALS_JSON` (google sheets mode)
-5. `CONFIRM_GOOGLE_WORKSHEET` (default `confirmed_bets`)
+- `@bot help` returns concise usage help.
+- `@bot devlog` sends `docs/DEVLOG.md` as an attachment.
+- `@bot` plus image attachments runs standard extraction.
+- `@bot odds [real|bonus|both]` plus image attachments runs odds automation.
 
-Currency display:
-1. `USD_TO_CAD_RATE` (default `1.36`)
+Mention routing lives in `src/bot/app.py`. Keep routing changes backward compatible unless the user explicitly asks for a command break.
 
-Odds pipeline:
-1. `ODDS_ENABLED` (default `true`)
-2. `ODDS_RAW_WORKSHEET` (default `odds_raw`)
-3. `ODDS_CLEAN_WORKSHEET` (default `odds_clean`)
-4. `ODDS_RANKED_WORKSHEET` (default `odds_ranked`)
+## Spreadsheet Contracts
 
-## Command Behavior
+Standard confirmation rows write these columns in this order:
 
-Mention routing in `src/bot/app.py`:
-
-1. `@bot help`
-- Returns usage help text.
-
-2. `@bot devlog`
-- Sends `docs/DEVLOG.md` as attachment.
-
-3. `@bot odds [real|bonus|both]` + image(s)
-- Runs odds extraction flow.
-- Creates review embed with preview/site breakdown.
-- Requires button confirm before writing pipeline sheets.
-
-4. `@bot` + image(s)
-- Runs standard extraction flow.
-- Creates editable extraction embed.
-- Confirm writes selected fields to configured backend.
-
-## Odds Pipeline Notes
-
-Current clean/ranking logic (`src/bot/odds_pipeline.py`):
-
-1. Moneyline rows only.
-2. Builds opposite-side matchup pairs.
-3. Uses cross-site pairs only (same-site fallback is not used).
-4. Applies site minimum rule:
-- `cloudbet`: any odds (`>= 1.0`)
-- all other sites: min odds `>= 1.5`
-5. Recommendation pool includes only rows marked `BET`.
-6. Ranked outputs include top 2 by:
-- ROI (desc)
-- Profit/Net (desc)
-- Rake (asc)
-
-## Sheets Contracts
-
-Standard confirm logging writes one row per confirmed bet with:
 1. `date`
 2. `team`
 3. `against`
@@ -126,44 +70,45 @@ Standard confirm logging writes one row per confirmed bet with:
 5. `stake`
 6. `return`
 
-Odds pipeline worksheets:
-1. raw tab headers: `RAW_HEADERS`
-2. clean tab headers: `CLEAN_HEADERS`
-3. ranked tab headers: `RANKED_HEADERS`
+Odds worksheets use the `RAW_HEADERS`, `CLEAN_HEADERS`, and `RANKED_HEADERS` constants in `src/bot/odds_pipeline.py`.
 
-Do not change header order without updating readers/writers/tests.
+Header order is an external contract. If you change it, update every reader, writer, test, and doc in the same PR.
 
-## Gemini Parsing Constraints
+## Gemini Contracts
 
-`src/bot/gemini_client.py` drives both extraction modes.
+When changing Gemini prompts or parsing:
 
-When changing prompts/parsing:
-1. Keep JSON-only expectation.
-2. Preserve schema compatibility with `models.py` and `odds_models.py`.
-3. Keep site attribution behavior explicit (candidate-level vs batch-level assumptions).
-4. Keep multi-key failover behavior stable.
+- Preserve JSON-only responses.
+- Preserve schema compatibility with `models.py` and `odds_models.py`.
+- Keep multi-key failover behavior stable.
+- Keep site attribution explicit for odds candidates.
+- Add tests around parsing edge cases before changing behavior.
 
-## Testing Expectations Before Merge
+## Testing Expectations
 
-Minimum:
-1. `pytest tests/test_app_help.py tests/test_gemini_client.py`
-2. `pytest tests/test_odds_pipeline.py tests/test_odds_ui.py`
+Run the focused tests for the area you changed. Before merging, prefer the full suite:
 
-Preferred:
-1. `pytest`
+```bash
+pytest
+```
 
-If changing command routing, parsing, or recommendation logic, add or update tests in the corresponding test modules.
+Minimum focused coverage:
+
+- Command routing or help text: `pytest tests/test_app_help.py`
+- Gemini parsing: `pytest tests/test_gemini_client.py`
+- Standard extraction UI: `pytest tests/test_currency_display.py tests/test_confirmation_log.py`
+- Odds pipeline: `pytest tests/test_odds_pipeline.py tests/test_pair_detection.py`
+- Odds UI: `pytest tests/test_odds_ui.py`
 
 ## Change Safety Checklist
 
-1. Do not commit secrets (`.env`, credential JSON).
-2. Keep Discord interaction authorization invoker-only.
-3. Preserve backward compatibility for existing commands.
-4. For odds changes, validate:
-- review embed still renders,
-- confirm path still writes raw/clean/ranked,
-- ranking output is non-empty only when rules allow.
+- Keep Discord edit and confirm controls invoker-only.
+- Keep spreadsheet writes explicit and test-covered.
+- Keep generated output out of Git.
+- Keep Apps Script reference files in `apps-script/`, not under `docs/`.
+- Update `docs/DEVLOG.md` when behavior changes.
+- Do not update `docs/DEVLOG.md` for pure documentation or file organization changes unless the user asks for changelog noise.
 
-## Deployment Reminder
+## Deployment Notes
 
-When deploying via file sync, ensure you upload to the same path systemd runs from (check `WorkingDirectory` in service file) before restarting the bot.
+Production deployments may rely on a systemd `WorkingDirectory`. When deploying manually, sync files to the exact directory used by the service before restarting the bot.
