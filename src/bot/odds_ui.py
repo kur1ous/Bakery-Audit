@@ -69,10 +69,13 @@ def build_odds_result_embed(
     color = discord.Color.green() if recommendations else discord.Color.orange()
     embed = discord.Embed(title="Odds Recommendations", color=color)
     embed.description = "Best underdog/hedge opportunities from this extraction batch."
+    picks_by_metric, suppressed_by_metric = _select_unique_market_picks_by_metric(recommendations)
 
     def lines(metric: str) -> str:
-        picks = [item for item in recommendations if item.metric == metric]
+        picks = picks_by_metric.get(metric, [])
         if not picks:
+            if suppressed_by_metric.get(metric, 0) > 0:
+                return "game already mentioned"
             return "No picks available"
 
         blocks = [_format_pick_block(pick, odds_mode=odds_mode) for pick in picks]
@@ -122,6 +125,9 @@ def build_over_under_embeds(candidates: list[OddsCandidate], *, odds_mode: str =
     _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
     _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
     _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
+    why_no_picks = _build_why_no_picks_note(analysis, market_label="over/under")
+    if why_no_picks:
+        _append_embed_field(embeds, name="Why No Picks?", value=why_no_picks, color=color)
 
     if len(recommendations) < 6:
         _append_embed_field(
@@ -138,8 +144,9 @@ def build_spread_embed(candidates: list[OddsCandidate], *, odds_mode: str = "bot
 
 
 def build_spread_embeds(candidates: list[OddsCandidate], *, odds_mode: str = "both") -> list[discord.Embed]:
-    recommendations = build_spread_recommendations(candidates)
-    spreads = [item for item in candidates if item.market == "spread"]
+    analysis = _analyze_spread_candidates(candidates)
+    recommendations = analysis["ranked"]
+    spreads = analysis["spreads"]
     color = discord.Color.green() if recommendations else discord.Color.orange()
     embeds: list[discord.Embed] = [discord.Embed(title="Spread Recommendations", color=color)]
 
@@ -162,6 +169,9 @@ def build_spread_embeds(candidates: list[OddsCandidate], *, odds_mode: str = "bo
     _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
     _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
     _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
+    why_no_picks = _build_why_no_picks_note(analysis, market_label="spread")
+    if why_no_picks:
+        _append_embed_field(embeds, name="Why No Picks?", value=why_no_picks, color=color)
 
     if len(recommendations) < 6:
         _append_embed_field(
@@ -210,16 +220,27 @@ def build_over_under_recommendations(candidates: list[OddsCandidate], *, b_stake
 
 
 def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> list[OddsRecommendation]:
+    analysis = _analyze_spread_candidates(candidates, b_stake=b_stake)
+    return analysis["ranked"]
+
+
+def _analyze_spread_candidates(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> dict[str, object]:
     grouped: dict[str, dict[str, list[OddsCandidate]]] = {}
+    spreads: list[OddsCandidate] = []
+    skipped_missing = 0
+    skipped_bad_odds = 0
 
     for candidate in candidates:
         if candidate.market != "spread":
             continue
+        spreads.append(candidate)
         if not all([candidate.date, candidate.team, candidate.against, candidate.spread_line]):
+            skipped_missing += 1
             continue
         odds_value = _to_float(candidate.odds)
         spread_value = _to_float(candidate.spread_line)
         if odds_value is None or odds_value <= 1 or spread_value is None:
+            skipped_bad_odds += 1
             continue
 
         matchup_left, matchup_right = sorted([candidate.team, candidate.against])
@@ -228,12 +249,18 @@ def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: fl
         grouped.setdefault(key, {}).setdefault(side_key, []).append(candidate)
 
     pool: list[OddsRecommendation] = []
+    groups_with_both_sides = 0
+    same_site_pairs_rejected = 0
+    cross_site_pairs_checked = 0
+    site_min_rejected = 0
+    eligible_in_pool = 0
     for sides in grouped.values():
         for left_key, left_candidates in list(sides.items()):
             left_team, left_against = left_key.split("|", 1)
             right_key = f"{left_against}|{left_team}"
             if right_key not in sides or left_key > right_key:
                 continue
+            groups_with_both_sides += 1
 
             best: tuple[tuple[float, float, float, float], OddsRecommendation] | None = None
             for left in left_candidates:
@@ -249,7 +276,9 @@ def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: fl
                         continue
 
                     if (left.site or "").strip().lower() == (right.site or "").strip().lower():
+                        same_site_pairs_rejected += 1
                         continue
+                    cross_site_pairs_checked += 1
 
                     left_h = _optimize_spread_hedge_stake(
                         b_stake=b_stake,
@@ -315,6 +344,10 @@ def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: fl
                         and _meets_site_min_odds(odds_hedge, hedge_candidate.site)
                         else "NO BET"
                     )
+                    if recommendation == "BET":
+                        eligible_in_pool += 1
+                    else:
+                        site_min_rejected += 1
 
                     rec = OddsRecommendation(
                         metric="",
@@ -343,7 +376,22 @@ def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: fl
             if best:
                 pool.append(best[1])
 
-    return select_top_recommendations(pool)
+    ranked = select_top_recommendations(pool)
+    return {
+        "spreads": spreads,
+        "pool": pool,
+        "ranked": ranked,
+        "input_rows": len(candidates),
+        "market_rows": len(spreads),
+        "skipped_missing": skipped_missing,
+        "skipped_bad_odds": skipped_bad_odds,
+        "group_keys": len(grouped),
+        "groups_with_both_sides": groups_with_both_sides,
+        "same_site_pairs_rejected": same_site_pairs_rejected,
+        "cross_site_pairs_checked": cross_site_pairs_checked,
+        "site_min_rejected": site_min_rejected,
+        "eligible_in_pool": eligible_in_pool,
+    }
 
 
 def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> dict[str, object]:
@@ -485,9 +533,12 @@ def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: 
             pool.append(best[1])
 
     ranked = select_top_recommendations(pool)
-    debug = {
+    return {
         "input_rows": len(candidates),
-        "totals_rows": len(totals),
+        "market_rows": len(totals),
+        "totals": totals,
+        "pool": pool,
+        "ranked": ranked,
         "skipped_missing": skipped_missing,
         "skipped_bad_odds": skipped_bad_odds,
         "group_keys": len(grouped),
@@ -495,22 +546,45 @@ def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: 
         "same_site_pairs_rejected": same_site_pairs_rejected,
         "cross_site_pairs_checked": cross_site_pairs_checked,
         "site_min_rejected": site_min_rejected,
-        "pool_size": len(pool),
         "eligible_in_pool": eligible_in_pool,
-        "ranked_count": len(ranked),
     }
-    return {"totals": totals, "pool": pool, "ranked": ranked, "debug": debug}
 
 
-def _format_ou_debug_field(debug: dict[str, int]) -> str:
-    return (
-        f"input_rows={debug['input_rows']} | totals_rows={debug['totals_rows']}\n"
-        f"skipped_missing={debug['skipped_missing']} | skipped_bad_odds={debug['skipped_bad_odds']}\n"
-        f"group_keys={debug['group_keys']} | groups_with_both_sides={debug['groups_with_both_sides']}\n"
-        f"same_site_pairs_rejected={debug['same_site_pairs_rejected']} | cross_site_pairs_checked={debug['cross_site_pairs_checked']}\n"
-        f"site_min_rejected={debug['site_min_rejected']} | pool_size={debug['pool_size']}\n"
-        f"eligible_in_pool={debug['eligible_in_pool']} | ranked_count={debug['ranked_count']}"
-    )
+def _build_why_no_picks_note(analysis: dict[str, object], *, market_label: str) -> str:
+    ranked = analysis["ranked"]
+    if ranked:
+        return ""
+
+    market_rows = int(analysis.get("market_rows", 0))
+    if market_rows == 0:
+        return f"No {market_label} rows were extracted from these screenshots."
+
+    reasons: list[str] = []
+    skipped_missing = int(analysis.get("skipped_missing", 0))
+    skipped_bad_odds = int(analysis.get("skipped_bad_odds", 0))
+    groups_with_both_sides = int(analysis.get("groups_with_both_sides", 0))
+    cross_site_pairs_checked = int(analysis.get("cross_site_pairs_checked", 0))
+    same_site_pairs_rejected = int(analysis.get("same_site_pairs_rejected", 0))
+    eligible_in_pool = int(analysis.get("eligible_in_pool", 0))
+    site_min_rejected = int(analysis.get("site_min_rejected", 0))
+
+    if skipped_missing:
+        reasons.append(f"{skipped_missing} row(s) were missing required fields.")
+    if skipped_bad_odds:
+        reasons.append(f"{skipped_bad_odds} row(s) had invalid odds or line values.")
+    if groups_with_both_sides == 0:
+        reasons.append("No games had both opposite sides extracted.")
+    elif cross_site_pairs_checked == 0 and same_site_pairs_rejected > 0:
+        reasons.append("Only same-site opposite-side pairs were found.")
+    elif cross_site_pairs_checked == 0:
+        reasons.append("No cross-site opposite-side pairs could be formed.")
+    if site_min_rejected > 0 and eligible_in_pool == 0:
+        reasons.append("All candidate pairs failed the site minimum odds rule.")
+
+    if not reasons:
+        reasons.append("No valid recommendation pairs remained after filtering.")
+
+    return " ".join(reasons)
 
 
 def _join_blocks_with_limit(blocks: list[str], *, limit: int) -> str:

@@ -58,6 +58,37 @@ def test_build_odds_result_embed_uses_site_aware_pick_blocks() -> None:
     assert "Status: `BET`" in roi_field.value
 
 
+def test_build_odds_result_embed_marks_duplicate_metric_game_as_already_mentioned() -> None:
+    shared = {
+        "date": "2026-04-18",
+        "bet_team": "POR",
+        "hedge_team": "SAS",
+        "bet_site": "xbet",
+        "hedge_site": "cloudbet",
+        "odds_bet": 4.99,
+        "odds_hedge": 1.92,
+        "b_stake": 100.0,
+        "h_hedge": 259.9,
+        "total_bet": 359.9,
+        "total_return": 499.0,
+        "net": 139.1,
+        "roi": 0.38655,
+        "rake": -0.2782,
+        "recommendation": "BET",
+    }
+    recs = [
+        OddsRecommendation(metric="roi", rank=1, **shared),
+        OddsRecommendation(metric="profit", rank=1, **shared),
+        OddsRecommendation(metric="rake", rank=1, **shared),
+    ]
+
+    embed = build_odds_result_embed(recs, insufficient_data=True)
+    profit_field = next(field for field in embed.fields if field.name == "Top 2 Profit")
+    rake_field = next(field for field in embed.fields if field.name == "Top 2 Rake (Lowest)")
+    assert profit_field.value == "game already mentioned"
+    assert rake_field.value == "game already mentioned"
+
+
 def test_build_odds_review_embed_has_site_breakdown() -> None:
     candidates = [
         OddsCandidate(date="2026-04-18", team="ATL", against="NYK", odds="3.01", site="xbet"),
@@ -327,6 +358,33 @@ def test_build_over_under_embed_marks_suppressed_metric_as_already_mentioned() -
     assert rake_field.value == "game already mentioned"
 
 
+def test_build_over_under_embed_includes_why_no_picks_note_for_same_site_only() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.93",
+            market="total_over",
+            total_line="222.5",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="2026-04-20",
+            team="TOR",
+            against="CLE",
+            odds="1.90",
+            market="total_under",
+            total_line="223.5",
+            site="cloudbet",
+        ),
+    ]
+
+    embed = build_over_under_embed(candidates, odds_mode="both")
+    why_field = next(field for field in embed.fields if field.name == "Why No Picks?")
+    assert "Only same-site opposite-side pairs were found." in why_field.value
+
+
 def test_build_spread_embed_renders_ranked_recommendations() -> None:
     candidates = [
         OddsCandidate(
@@ -380,6 +438,33 @@ def test_build_spread_embed_handles_no_rows() -> None:
         [OddsCandidate(date="2026-04-22", team="DAL", against="MIN", odds="1.42", market="moneyline", site="xbet")]
     )
     assert embed.description == "No spread rows extracted from this batch."
+
+
+def test_build_spread_embed_includes_why_no_picks_note_for_same_site_only() -> None:
+    candidates = [
+        OddsCandidate(
+            date="2026-04-22",
+            team="DAL",
+            against="MIN",
+            odds="1.42",
+            market="spread",
+            spread_line="+1.5",
+            site="xbet",
+        ),
+        OddsCandidate(
+            date="2026-04-22",
+            team="MIN",
+            against="DAL",
+            odds="2.91",
+            market="spread",
+            spread_line="-1.5",
+            site="xbet",
+        ),
+    ]
+
+    embed = build_spread_embed(candidates)
+    why_field = next(field for field in embed.fields if field.name == "Why No Picks?")
+    assert "Only same-site opposite-side pairs were found." in why_field.value
 
 
 def test_build_spread_recommendations_returns_ranked_metrics() -> None:
