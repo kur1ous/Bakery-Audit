@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from src.bot.odds_models import OddsCandidate
-from src.bot.odds_pipeline import OddsPipelineContext, _to_raw_rows, build_clean_rows, select_top_recommendations
+from src.bot.odds_pipeline import OddsPipelineContext, OddsRecommendation, _to_raw_rows, build_clean_rows, select_top_recommendations
 
 
 def _ctx() -> OddsPipelineContext:
@@ -96,6 +98,82 @@ def test_build_clean_rows_ignores_totals_candidates() -> None:
     assert len(pool) == 1
     assert rows[0][3] == "TOR"
     assert rows[0][4] == "CLE"
+
+
+def test_build_clean_rows_match_workbook_example() -> None:
+    candidates = [
+        OddsCandidate(date="2026-04-20", team="TOR", against="CLE", odds="3.81", market="moneyline", site="xbet"),
+        OddsCandidate(date="2026-04-20", team="CLE", against="TOR", odds="1.28", market="moneyline", site="cloudbet"),
+    ]
+
+    rows, pool = build_clean_rows(_ctx(), candidates)
+
+    assert len(rows) == 1
+    assert len(pool) == 1
+    assert rows[0][10] == pytest.approx(297.66, abs=0.01)
+    assert rows[0][11] == pytest.approx(397.66, abs=0.01)
+    assert rows[0][12] == pytest.approx(381.0, abs=0.01)
+    assert rows[0][13] == pytest.approx(61.47, abs=0.01)
+    assert rows[0][14] == pytest.approx(0.2800, abs=0.0001)
+    assert rows[0][15] == pytest.approx(-0.043717, abs=0.000001)
+    assert pool[0].h_hedge == pytest.approx(297.66, abs=0.01)
+    assert pool[0].total_bet == pytest.approx(397.66, abs=0.01)
+    assert pool[0].total_return == pytest.approx(381.0, abs=0.01)
+    assert pool[0].net == pytest.approx(61.47, abs=0.01)
+    assert pool[0].roi == pytest.approx(0.2800, abs=0.0001)
+    assert pool[0].rake == pytest.approx(-0.043717, abs=0.000001)
+
+
+def test_build_clean_rows_prefers_non_cloudbet_bonus_side() -> None:
+    candidates = [
+        OddsCandidate(date="2026-04-24", team="PIT", against="PHI", odds="1.85", market="moneyline", site="xbet"),
+        OddsCandidate(date="2026-04-24", team="PHI", against="PIT", odds="2.00", market="moneyline", site="cloudbet"),
+    ]
+
+    rows, pool = build_clean_rows(_ctx(), candidates)
+
+    assert len(rows) == 1
+    assert len(pool) == 1
+    assert rows[0][3] == "PIT"
+    assert rows[0][4] == "PHI"
+    assert rows[0][7] == "xbet"
+    assert rows[0][8] == "cloudbet"
+    assert rows[0][10] == pytest.approx(92.50, abs=0.01)
+    assert rows[0][13] == pytest.approx(42.50, abs=0.01)
+    assert rows[0][14] == pytest.approx(1.0, abs=0.0001)
+    assert pool[0].bet_site == "xbet"
+    assert pool[0].hedge_site == "cloudbet"
+    assert pool[0].net == pytest.approx(42.50, abs=0.01)
+
+
+def test_select_top_recommendations_uses_next_game_when_metric_would_repeat() -> None:
+    shared = {
+        "rank": 0,
+        "bet_site": "xbet",
+        "hedge_site": "cloudbet",
+        "odds_bet": 3.81,
+        "odds_hedge": 1.28,
+        "b_stake": 100.0,
+        "h_hedge": 297.66,
+        "total_bet": 397.66,
+        "total_return": 381.0,
+        "recommendation": "BET",
+    }
+    pool = [
+        OddsRecommendation(metric="", date="2026-04-20", bet_team="TOR", hedge_team="CLE", net=61.47, roi=0.28, rake=-0.0440, **shared),
+        OddsRecommendation(metric="", date="2026-04-21", bet_team="ATL", hedge_team="NYK", net=55.00, roi=0.20, rake=-0.0300, **shared),
+        OddsRecommendation(metric="", date="2026-04-22", bet_team="MIN", hedge_team="DEN", net=50.00, roi=0.18, rake=-0.0200, **shared),
+        OddsRecommendation(metric="", date="2026-04-23", bet_team="LAL", hedge_team="HOU", net=45.00, roi=0.15, rake=-0.0100, **shared),
+    ]
+
+    ranked = select_top_recommendations(pool)
+
+    roi_games = [(item.date, item.bet_team, item.hedge_team) for item in ranked if item.metric == "roi"]
+    profit_games = [(item.date, item.bet_team, item.hedge_team) for item in ranked if item.metric == "profit"]
+    rake_games = [(item.date, item.bet_team, item.hedge_team) for item in ranked if item.metric == "rake"]
+    assert roi_games == [("2026-04-20", "TOR", "CLE"), ("2026-04-21", "ATL", "NYK")]
+    assert profit_games == [("2026-04-22", "MIN", "DEN"), ("2026-04-23", "LAL", "HOU")]
+    assert rake_games == []
 
 
 def test_to_raw_rows_writes_only_moneyline_candidates() -> None:

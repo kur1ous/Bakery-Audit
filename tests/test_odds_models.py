@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.bot.odds_models import OddsCandidate
+from src.bot.odds_models import OddsCandidate, candidate_site_scope
 
 
 def test_odds_candidate_normalizes_date_team_and_site() -> None:
@@ -78,3 +78,21 @@ def test_odds_candidate_spread_market_and_signed_line_are_normalized() -> None:
     assert candidate.total_line == ""
     assert candidate.team == "DAL"
     assert candidate.against == "MIN"
+
+
+def test_candidate_site_scope_uses_source_image_when_site_missing() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "2026-04-20",
+            "team": "Toronto Raptors",
+            "against": "Cleveland Cavaliers",
+            "odds": "1.93",
+            "market": "OVER",
+            "total_line": "222.5",
+            "site": "",
+            "source_image": "tor-cle-cloudbet-1.png",
+        }
+    )
+
+    assert candidate.site == "cloudbet"
+    assert candidate_site_scope(candidate) == "site:cloudbet"

@@ -179,6 +179,22 @@ def _to_team_code(value: str) -> str:
     return (compact + "XXX")[:3]
 
 
+def normalize_site_name(value: str) -> str:
+    return _normalize_site(value)
+
+
+def candidate_site_scope(candidate: OddsCandidate) -> str:
+    normalized_site = _normalize_site(candidate.site)
+    if normalized_site:
+        return f"site:{normalized_site}"
+
+    source_key = (candidate.source_image or "").strip().lower()
+    if source_key:
+        return f"image:{source_key}"
+
+    return ""
+
+
 def _normalize_site(value: str) -> str:
     raw = (value or "").strip().lower()
     if not raw:

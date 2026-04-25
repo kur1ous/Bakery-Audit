@@ -10,7 +10,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from .models import BetExtraction
-from .odds_models import OddsExtractionBatch
+from .odds_models import OddsExtractionBatch, normalize_site_name
 
 LOGGER = logging.getLogger(__name__)
 
@@ -73,7 +73,10 @@ Rules:
 - confidence is 0..1.
 - Determine `site` from the browser URL/domain if visible (highest priority), then sportsbook branding.
 - If URL shows cloudbet.com use "cloudbet". If xbet.ag/1xbet use "xbet". If mybookie use "mybookie".
+- This call contains exactly one screenshot. Never mix site attribution across screenshots.
 - All bets in one image should normally have the same site as the image-level site.
+- If the screenshot URL/branding indicates one sportsbook, every extracted row from that screenshot must use that same `site`.
+- Preserve the per-row `source_image` value when provided by the caller.
 """.strip()
 
 
@@ -146,12 +149,13 @@ class GeminiExtractionService:
             batch = OddsExtractionBatch.model_validate(payload)
             batch.raw_text = raw_text
 
-            image_site = batch.site
+            image_site = normalize_site_name(batch.site)
+            source_site = normalize_site_name(source_image)
             for candidate in batch.bets:
                 if not candidate.source_image and source_image:
                     candidate.source_image = source_image
-                if image_site:
-                    candidate.site = image_site
+                candidate_site = normalize_site_name(candidate.site)
+                candidate.site = image_site or source_site or candidate_site
 
             return batch
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:

@@ -1,6 +1,6 @@
 # Development Log
 
-Last Updated: 2026-04-18
+Last Updated: 2026-04-24
 Owner: Bread Audit bot project
 
 ## Update Policy
@@ -44,6 +44,18 @@ Owner: Bread Audit bot project
   - `ODDS_RANKED_WORKSHEET` (default `odds_ranked`)
 
 ## Recent Changes
+
+### 2026-04-24
+- Updated moneyline odds calculations to follow the workbook formulas used by the client:
+  - real hedge remains `stake * odds_bet / odds_hedge`
+  - profit now uses the bonus-flow formula `stake * (odds_bet - 1) - hedge_bonus`
+  - ROI now measures bonus profit against real cash exposure only on the hedge side
+- Aligned rake/edge sign with the workbook display (`1 - implied probability sum`) across moneyline, totals, and spread outputs.
+- Updated ranked recommendation selection so later metric buckets skip games already used by earlier buckets instead of duplicating the same matchup.
+- Added regression coverage for the workbook-style TOR/CLE example and the unique-metric ranking behavior.
+- Tightened odds site attribution so per-image site detection is preserved more aggressively, source-image names can backfill known sportsbooks, and cross-image totals/spread pairs no longer collapse into the same empty-site bucket when site text is missing.
+- Added a sportsbook restriction for bonus-mode calculations: Cloudbet cannot be the bonus side. Moneyline pairing now prefers a non-Cloudbet bonus side when available, and embeds suppress bonus instructions when the selected bet site is Cloudbet.
+- Replaced the multi-page odds result view with a single market-first recommendations embed that shows one best pick each for moneyline, over/under, and spread.
 
 ### 2026-04-18
 - Implemented phase-2 odds automation command `@bot odds`.

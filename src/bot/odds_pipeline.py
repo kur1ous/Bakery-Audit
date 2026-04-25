@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from .odds_models import OddsCandidate
+from .odds_models import OddsCandidate, candidate_site_scope
 
 
 RAW_HEADERS = [
@@ -103,6 +103,7 @@ class OddsPipelineResult:
     raw_rows_written: int
     clean_rows_written: int
     ranked_rows_written: int
+    recommendation_pool: list[OddsRecommendation]
     recommendations: list[OddsRecommendation]
 
 
@@ -182,6 +183,7 @@ class GoogleSheetsOddsPipeline:
             raw_rows_written=len(raw_rows),
             clean_rows_written=len(clean_rows),
             ranked_rows_written=len(ranked_rows),
+            recommendation_pool=recommendation_pool,
             recommendations=recommendations,
         )
 
@@ -254,18 +256,22 @@ def build_clean_rows(
             if not best_pair:
                 continue
 
-            underdog, favorite, odds_u, odds_f = best_pair
+            bet_candidate, hedge_candidate, odds_bet, odds_hedge = best_pair
 
-            h_hedge = (b_stake * odds_u) / odds_f if odds_f > 0 else 0.0
-            total_bet = b_stake + h_hedge
-            total_return = b_stake * odds_u
-            net = total_return - total_bet
-            roi = (net / total_bet) if total_bet else 0.0
-            rake = (1 / odds_u) + (1 / odds_f) - 1
+            real_hedge = (b_stake * odds_bet) / odds_hedge if odds_hedge > 0 else 0.0
+            real_total_bet = b_stake + real_hedge
+            real_total_return = b_stake * odds_bet
+            real_net = real_total_return - real_total_bet
+            bonus_hedge = (b_stake * (odds_bet - 1.0)) / odds_hedge if odds_hedge > 0 else 0.0
+            bonus_total_bet = b_stake + bonus_hedge
+            bonus_profit = (b_stake * (odds_bet - 1.0)) - bonus_hedge
+            bonus_roi = (bonus_profit / bonus_hedge) if bonus_hedge else 0.0
+            rake = 1 - ((1 / odds_bet) + (1 / odds_hedge))
 
             eligible = (
-                _meets_site_min_odds(odds_u, underdog.site)
-                and _meets_site_min_odds(odds_f, favorite.site)
+                _meets_site_min_odds(odds_bet, bet_candidate.site)
+                and _meets_site_min_odds(odds_hedge, hedge_candidate.site)
+                and _bonus_site_allowed(bet_candidate.site)
             )
             recommendation = "BET" if eligible else "NO BET"
 
@@ -273,19 +279,19 @@ def build_clean_rows(
                 [
                     now,
                     context.session_id,
-                    underdog.date,
-                    underdog.team,
-                    favorite.team,
-                    round(odds_u, 4),
-                    round(odds_f, 4),
-                    underdog.site,
-                    favorite.site,
+                    bet_candidate.date,
+                    bet_candidate.team,
+                    hedge_candidate.team,
+                    round(odds_bet, 4),
+                    round(odds_hedge, 4),
+                    bet_candidate.site,
+                    hedge_candidate.site,
                     round(b_stake, 2),
-                    round(h_hedge, 2),
-                    round(total_bet, 2),
-                    round(total_return, 2),
-                    round(net, 2),
-                    round(roi, 6),
+                    round(real_hedge, 2),
+                    round(real_total_bet, 2),
+                    round(real_total_return, 2),
+                    round(bonus_profit, 2),
+                    round(bonus_roi, 6),
                     round(rake, 6),
                     recommendation,
                 ]
@@ -295,19 +301,19 @@ def build_clean_rows(
                 OddsRecommendation(
                     metric="",
                     rank=0,
-                    date=underdog.date,
-                    bet_team=underdog.team,
-                    hedge_team=favorite.team,
-                    bet_site=underdog.site,
-                    hedge_site=favorite.site,
-                    odds_bet=round(odds_u, 4),
-                    odds_hedge=round(odds_f, 4),
+                    date=bet_candidate.date,
+                    bet_team=bet_candidate.team,
+                    hedge_team=hedge_candidate.team,
+                    bet_site=bet_candidate.site,
+                    hedge_site=hedge_candidate.site,
+                    odds_bet=round(odds_bet, 4),
+                    odds_hedge=round(odds_hedge, 4),
                     b_stake=round(b_stake, 2),
-                    h_hedge=round(h_hedge, 2),
-                    total_bet=round(total_bet, 2),
-                    total_return=round(total_return, 2),
-                    net=round(net, 2),
-                    roi=round(roi, 6),
+                    h_hedge=round(real_hedge, 2),
+                    total_bet=round(real_total_bet, 2),
+                    total_return=round(real_total_return, 2),
+                    net=round(bonus_profit, 2),
+                    roi=round(bonus_roi, 6),
                     rake=round(rake, 6),
                     recommendation=recommendation,
                 )
@@ -333,27 +339,22 @@ def _pick_best_site_pair(
             if odds_right is None or odds_right <= 1:
                 continue
 
-            if odds_left >= odds_right:
-                underdog = left
-                favorite = right
-                odds_u = odds_left
-                odds_f = odds_right
-            else:
-                underdog = right
-                favorite = left
-                odds_u = odds_right
-                odds_f = odds_left
+            if candidate_site_scope(left) == candidate_site_scope(right):
+                continue
 
-            h_hedge = (b_stake * odds_u) / odds_f if odds_f > 0 else 0.0
-            total_bet = b_stake + h_hedge
-            total_return = b_stake * odds_u
-            net = total_return - total_bet
-            roi = (net / total_bet) if total_bet else 0.0
+            for bet_candidate, hedge_candidate, odds_bet, odds_hedge in (
+                (left, right, odds_left, odds_right),
+                (right, left, odds_right, odds_left),
+            ):
+                if not _bonus_site_allowed(bet_candidate.site):
+                    continue
 
-            cross_site = (left.site or "").strip().lower() != (right.site or "").strip().lower()
-            score = (net, roi, odds_u, odds_f)
-            payload = (score, (underdog, favorite, odds_u, odds_f))
-            if cross_site:
+                bonus_hedge = (b_stake * (odds_bet - 1.0)) / odds_hedge if odds_hedge > 0 else 0.0
+                bonus_profit = (b_stake * (odds_bet - 1.0)) - bonus_hedge
+                bonus_roi = (bonus_profit / bonus_hedge) if bonus_hedge else 0.0
+                rake = 1 - ((1 / odds_bet) + (1 / odds_hedge))
+                score = (bonus_profit, bonus_roi, rake, odds_bet)
+                payload = (score, (bet_candidate, hedge_candidate, odds_bet, odds_hedge))
                 cross_site_options.append(payload)
 
     if cross_site_options:
@@ -370,19 +371,24 @@ def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecom
 
     results: list[OddsRecommendation] = []
 
+    used_game_keys: set[str] = set()
+
     def top(metric: str, reverse: bool) -> list[OddsRecommendation]:
         key_fn = {
             "roi": lambda item: item.roi,
             "profit": lambda item: item.net,
             "rake": lambda item: item.rake,
         }[metric]
-        ranked = sorted(eligible_pool, key=key_fn, reverse=reverse)[:2]
+        ranked = sorted(eligible_pool, key=key_fn, reverse=reverse)
         labeled: list[OddsRecommendation] = []
-        for idx, item in enumerate(ranked, start=1):
+        for item in ranked:
+            game_key = _recommendation_game_key(item)
+            if game_key in used_game_keys:
+                continue
             labeled.append(
                 OddsRecommendation(
                     metric=metric,
-                    rank=idx,
+                    rank=len(labeled) + 1,
                     date=item.date,
                     bet_team=item.bet_team,
                     hedge_team=item.hedge_team,
@@ -400,13 +406,21 @@ def select_top_recommendations(pool: list[OddsRecommendation]) -> list[OddsRecom
                     recommendation=item.recommendation,
                 )
             )
+            used_game_keys.add(game_key)
+            if len(labeled) == 2:
+                break
         return labeled
 
     results.extend(top("roi", True))
     results.extend(top("profit", True))
-    results.extend(top("rake", False))
+    results.extend(top("rake", True))
 
     return results
+
+
+def _recommendation_game_key(item: OddsRecommendation) -> str:
+    teams = sorted([item.bet_team, item.hedge_team])
+    return f"{item.date}|{teams[0]}|{teams[1]}"
 
 def _to_raw_rows(context: OddsPipelineContext, candidates: list[OddsCandidate]) -> list[list[Any]]:
     now = datetime.utcnow().isoformat(timespec="seconds")
@@ -475,9 +489,9 @@ def _apply_clean_formulas(clean_rows: list[list[Any]], start_row: int) -> list[l
         local[10] = f"=IF(G{row_idx}=0,0,(J{row_idx}*F{row_idx})/G{row_idx})"
         local[11] = f"=J{row_idx}+K{row_idx}"
         local[12] = f"=J{row_idx}*F{row_idx}"
-        local[13] = f"=M{row_idx}-L{row_idx}"
-        local[14] = f"=IF(L{row_idx}=0,0,N{row_idx}/L{row_idx})"
-        local[15] = f"=(1/F{row_idx})+(1/G{row_idx})-1"
+        local[13] = f"=IF(G{row_idx}=0,0,(J{row_idx}*(F{row_idx}-1))-(J{row_idx}*(F{row_idx}-1)/G{row_idx}))"
+        local[14] = f"=IF(G{row_idx}=0,0,N{row_idx}/(J{row_idx}*(F{row_idx}-1)/G{row_idx}))"
+        local[15] = f"=1-((1/F{row_idx})+(1/G{row_idx}))"
         local[16] = (
             f"=IF(AND("
             f"IF(LOWER(H{row_idx})=\"cloudbet\",F{row_idx}>=1,F{row_idx}>=1.5),"
@@ -508,6 +522,10 @@ def _meets_site_min_odds(odds_value: float, site: str) -> bool:
     # - all other sites: min odds 1.5
     min_required = 1.0 if site_key == "cloudbet" else 1.5
     return odds_value >= min_required
+
+
+def _bonus_site_allowed(site: str) -> bool:
+    return (site or "").strip().lower() != "cloudbet"
 
 
 

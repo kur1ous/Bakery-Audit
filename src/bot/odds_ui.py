@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import discord
 
-from .odds_models import OddsCandidate
+from .odds_models import OddsCandidate, candidate_site_scope
 from .odds_pipeline import OddsPipelineContext, OddsPipelineWriter, OddsRecommendation, select_top_recommendations
 from .state import PendingOddsStore
 
@@ -83,12 +83,43 @@ def build_odds_result_embed(
 
     embed.add_field(name="Top 2 ROI", value=lines("roi"), inline=False)
     embed.add_field(name="Top 2 Profit", value=lines("profit"), inline=False)
-    embed.add_field(name="Top 2 Rake (Lowest)", value=lines("rake"), inline=False)
+    embed.add_field(name="Top 2 Rake (Best Edge)", value=lines("rake"), inline=False)
 
     if insufficient_data:
         embed.add_field(
             name="Note",
             value="Fewer than 2 games were available for one or more metrics.",
+            inline=False,
+        )
+
+    return embed
+
+
+def build_best_by_market_embed(
+    *,
+    moneyline_recommendations: list[OddsRecommendation],
+    over_under_recommendations: list[OddsRecommendation],
+    spread_recommendations: list[OddsRecommendation],
+    odds_mode: str = "both",
+) -> discord.Embed:
+    sections = [
+        ("Best Moneyline", _select_best_market_pick(moneyline_recommendations), _format_pick_block),
+        ("Best O/U", _select_best_market_pick(over_under_recommendations), _format_ou_pick_block),
+        ("Best Spread", _select_best_market_pick(spread_recommendations), _format_spread_pick_block),
+    ]
+    available_count = sum(1 for _, pick, _ in sections if pick is not None)
+    color = discord.Color.green() if available_count else discord.Color.orange()
+    embed = discord.Embed(title="Odds Recommendations", color=color)
+    embed.description = "Best pick per market from this extraction batch."
+
+    for label, pick, formatter in sections:
+        value = formatter(pick, odds_mode=odds_mode) if pick else "No picks available"
+        embed.add_field(name=label, value=value, inline=False)
+
+    if available_count < 3:
+        embed.add_field(
+            name="Note",
+            value="At least one market did not produce a reportable pick.",
             inline=False,
         )
 
@@ -124,7 +155,7 @@ def build_over_under_embeds(candidates: list[OddsCandidate], *, odds_mode: str =
 
     _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
     _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
-    _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Rake (Best Edge)", lines("rake"), color=color)
     why_no_picks = _build_why_no_picks_note(analysis, market_label="over/under")
     if why_no_picks:
         _append_embed_field(embeds, name="Why No Picks?", value=why_no_picks, color=color)
@@ -168,7 +199,7 @@ def build_spread_embeds(candidates: list[OddsCandidate], *, odds_mode: str = "bo
 
     _append_metric_chunks(embeds, "Top 2 ROI", lines("roi"), color=color)
     _append_metric_chunks(embeds, "Top 2 Profit", lines("profit"), color=color)
-    _append_metric_chunks(embeds, "Top 2 Rake (Lowest)", lines("rake"), color=color)
+    _append_metric_chunks(embeds, "Top 2 Rake (Best Edge)", lines("rake"), color=color)
     why_no_picks = _build_why_no_picks_note(analysis, market_label="spread")
     if why_no_picks:
         _append_embed_field(embeds, name="Why No Picks?", value=why_no_picks, color=color)
@@ -224,6 +255,24 @@ def build_spread_recommendations(candidates: list[OddsCandidate], *, b_stake: fl
     return analysis["ranked"]
 
 
+def build_combined_recommendations(candidates: list[OddsCandidate], *, moneyline_pool: list[OddsRecommendation] | None = None) -> list[OddsRecommendation]:
+    combined_pool: list[OddsRecommendation] = []
+    if moneyline_pool:
+        combined_pool.extend(moneyline_pool)
+    combined_pool.extend(_analyze_over_under_candidates(candidates)["pool"])
+    combined_pool.extend(_analyze_spread_candidates(candidates)["pool"])
+    return select_top_recommendations(combined_pool)
+
+
+def _select_best_market_pick(recommendations: list[OddsRecommendation]) -> OddsRecommendation | None:
+    if not recommendations:
+        return None
+    roi_top = next((item for item in recommendations if item.metric == "roi" and item.rank == 1), None)
+    if roi_top is not None:
+        return roi_top
+    return recommendations[0]
+
+
 def _analyze_spread_candidates(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> dict[str, object]:
     grouped: dict[str, dict[str, list[OddsCandidate]]] = {}
     spreads: list[OddsCandidate] = []
@@ -275,7 +324,7 @@ def _analyze_spread_candidates(candidates: list[OddsCandidate], *, b_stake: floa
                     if right_odds is None or right_spread is None:
                         continue
 
-                    if (left.site or "").strip().lower() == (right.site or "").strip().lower():
+                    if candidate_site_scope(left) == candidate_site_scope(right):
                         same_site_pairs_rejected += 1
                         continue
                     cross_site_pairs_checked += 1
@@ -337,7 +386,7 @@ def _analyze_spread_candidates(candidates: list[OddsCandidate], *, b_stake: floa
                     net = min(item.profit for item in outcomes)
                     total_return = total_bet + net
                     roi = (net / total_bet) if total_bet else 0.0
-                    rake = (1 / odds_bet) + (1 / odds_hedge) - 1
+                    rake = 1 - ((1 / odds_bet) + (1 / odds_hedge))
                     recommendation = (
                         "BET"
                         if _meets_site_min_odds(odds_bet, bet_candidate.site)
@@ -442,7 +491,7 @@ def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: 
                 if under_odds is None:
                     continue
 
-                if (over.site or "").strip().lower() == (under.site or "").strip().lower():
+                if candidate_site_scope(over) == candidate_site_scope(under):
                     same_site_pairs_rejected += 1
                     continue
                 cross_site_pairs_checked += 1
@@ -485,7 +534,7 @@ def _analyze_over_under_candidates(candidates: list[OddsCandidate], *, b_stake: 
                 net = min(outcome.profit for outcome in outcomes)
                 total_return = total_bet + net
                 roi = (net / total_bet) if total_bet else 0.0
-                rake = (1 / odds_bet) + (1 / odds_hedge) - 1
+                rake = 1 - ((1 / odds_bet) + (1 / odds_hedge))
                 recommendation = (
                     "BET"
                     if _meets_site_min_odds(odds_bet, bet_candidate.site)
@@ -809,29 +858,35 @@ def _format_spread_pick_block(pick: OddsRecommendation, *, odds_mode: str = "bot
 
 def _format_pick_block(pick: OddsRecommendation, *, odds_mode: str = "both") -> str:
     real_if_bet, real_if_hedge, real_floor = _compute_real_outcomes(pick)
+    bonus_allowed = _bonus_site_allowed(pick.bet_site)
     bonus_h_hedge, bonus_if_bet, bonus_if_hedge, bonus_floor = _compute_bonus_outcomes(pick)
     bet_site = pick.bet_site or "unknown-site"
     hedge_site = pick.hedge_site or "unknown-site"
     mode = (odds_mode or "both").strip().lower()
+    lines = [
+        f"{pick.rank}) Bet **{pick.bet_team}** @ **{bet_site}**",
+        "",
+        _display_date(pick.date),
+        "",
+        "SUMMARY",
+        f"Odds (bet/hedge): {pick.odds_bet:.2f} ({bet_site}) / {pick.odds_hedge:.2f} ({hedge_site})",
+        (
+            f"Real (bet/hedge/{_result_label(real_floor)}/%): "
+            f"{pick.b_stake:.2f} / {pick.h_hedge:.2f} / {abs(real_floor):.2f} / {_percent_of_total(real_floor, pick.total_bet)}"
+        ),
+        _bonus_summary_line(pick, bonus_allowed, bonus_h_hedge, bonus_floor),
+    ]
 
-    instructions: list[str] = []
     if mode in ("real", "both"):
-        instructions.extend(_build_real_instruction_lines(pick, bet_site, hedge_site, real_floor))
-    if mode in ("bonus", "both"):
-        instructions.extend(_build_bonus_instruction_lines(pick, bet_site, hedge_site, bonus_floor))
-    instructions_text = "\n".join(instructions)
+        lines.extend(["", "REAL"])
+        lines.extend(_build_real_instruction_lines(pick, bet_site, hedge_site, real_floor))
+    if mode in ("bonus", "both") and bonus_allowed:
+        lines.extend(["", "BONUS"])
+        lines.extend(_build_bonus_instruction_lines(pick, bet_site, hedge_site, bonus_floor))
+    elif mode in ("bonus", "both"):
+        lines.extend(["", "BONUS", "Bonus is unavailable when the bet site is cloudbet."])
 
-    return (
-        f"**{pick.rank}) Bet {pick.bet_team} @ {bet_site}**\n"
-        f"{instructions_text}\n"
-        f"Date: `{pick.date}`\n"
-        f"Odds (bet/hedge): `{pick.odds_bet:.2f} ({bet_site})` / `{pick.odds_hedge:.2f} ({hedge_site})`\n"
-        f"T: `{pick.total_bet:.2f}` | r: `{pick.total_return:.2f}`\n"
-        f"Real (bet/hedge/floor): `{real_if_bet:.2f}` / `{real_if_hedge:.2f}` / `{real_floor:.2f}`\n"
-        f"Bonus h (optimized): `{bonus_h_hedge:.2f}`\n"
-        f"Bonus (bet/hedge/floor): `{bonus_if_bet:.2f}` / `{bonus_if_hedge:.2f}` / `{bonus_floor:.2f}`\n"
-        f"Status: `{pick.recommendation}` | Net: `{pick.net:.2f}` | ROI: `{pick.roi:.2%}` | Rake: `{pick.rake:.4f}`"
-    )
+    return "\n".join(lines)
 
 def _compute_real_outcomes(pick: OddsRecommendation) -> tuple[float, float, float]:
     real_if_bet = (pick.b_stake * pick.odds_bet) - pick.total_bet
@@ -862,11 +917,11 @@ def _build_real_instruction_lines(
     real_total = pick.total_bet
     real_pct = _percent_of_total(floor_value, real_total)
     return [
-        f"REAL: On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`real`) on `{pick.bet_team}`.",
-        f"REAL: On site `{hedge_site}`, bet `h={pick.h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.",
+        f"On {bet_site}, bet {pick.b_stake:.2f} (real) on {pick.bet_team}.",
+        f"On {hedge_site}, bet {pick.h_hedge:.2f} (real) on {pick.hedge_team}.",
         (
-            f"REAL: Either way, result is `{result_word}` `{result_amount:.2f}` (floor), "
-            f"`{real_pct}` of total real money bet `{real_total:.2f}`."
+            f"Either way, result is {result_word} {result_amount:.2f}, "
+            f"{real_pct} of total real money bet {real_total:.2f}."
         ),
     ]
 
@@ -883,13 +938,40 @@ def _build_bonus_instruction_lines(
     real_total = bonus_h_hedge
     real_pct = _percent_of_total(floor_value, real_total)
     return [
-        f"BONUS: On site `{bet_site}`, bet `b={pick.b_stake:.2f}` (`bonus`) on `{pick.bet_team}`.",
-        f"BONUS: On site `{hedge_site}`, bet `h={bonus_h_hedge:.2f}` (`real`) on `{pick.hedge_team}`.",
+        f"On {bet_site}, bet {pick.b_stake:.2f} (bonus) on {pick.bet_team}.",
+        f"On {hedge_site}, bet {bonus_h_hedge:.2f} (real) on {pick.hedge_team}.",
         (
-            f"BONUS: Either way, result is `{result_word}` `{result_amount:.2f}` (guaranteed worst-case), "
-            f"`{real_pct}` of total real cash bet `{real_total:.2f}` (bonus excluded)."
+            f"Either way, result is {result_word} {result_amount:.2f}, "
+            f"{real_pct} of total real cash bet {real_total:.2f}."
         ),
     ]
+
+
+def _bonus_summary_line(
+    pick: OddsRecommendation,
+    bonus_allowed: bool,
+    bonus_h_hedge: float,
+    bonus_floor: float,
+) -> str:
+    if not bonus_allowed:
+        return "Bonus: unavailable when the bet site is cloudbet"
+    return (
+        f"Bonus (bet/hedge/{_result_label(bonus_floor)}/%): "
+        f"{pick.b_stake:.2f} / {bonus_h_hedge:.2f} / {abs(bonus_floor):.2f} / {_percent_of_total(bonus_floor, bonus_h_hedge)}"
+    )
+
+
+def _result_label(value: float) -> str:
+    return "profit" if value >= 0 else "loss"
+
+
+def _display_date(value: str) -> str:
+    try:
+        from datetime import datetime
+
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%b-%d")
+    except ValueError:
+        return value or "(unknown date)"
 
 
 def _percent_of_total(value: float, total: float) -> str:
@@ -912,6 +994,10 @@ def _meets_site_min_odds(odds_value: float, site: str) -> bool:
     site_key = (site or "").strip().lower()
     min_required = 1.0 if site_key == "cloudbet" else 1.5
     return odds_value >= min_required
+
+
+def _bonus_site_allowed(site: str) -> bool:
+    return (site or "").strip().lower() != "cloudbet"
 
 
 @dataclass(frozen=True)
@@ -1173,84 +1259,6 @@ def _label_spread_bucket(margin: float, bet_spread: float, hedge_spread: float) 
     return f"Middle window ({low:g}, {high:g})"
 
 
-class OddsResultPaginationView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        invoker_user_id: int,
-        recommendations: list[OddsRecommendation],
-        candidates: list[OddsCandidate],
-        insufficient_data: bool,
-        odds_mode: str = "both",
-    ) -> None:
-        super().__init__(timeout=900)
-        self.invoker_user_id = invoker_user_id
-        self.recommendations = recommendations
-        self.candidates = candidates
-        self.insufficient_data = insufficient_data
-        self.odds_mode = odds_mode
-        self.page = 0
-        self._sync_buttons()
-
-    async def _authorize(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.invoker_user_id:
-            await interaction.response.send_message(
-                "Only the user who triggered this odds parse can use these buttons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    def _current_embeds(self) -> list[discord.Embed]:
-        if self.page == 0:
-            return [
-                build_odds_result_embed(
-                    self.recommendations,
-                    insufficient_data=self.insufficient_data,
-                    odds_mode=self.odds_mode,
-                )
-            ]
-        if self.page == 1:
-            return build_over_under_embeds(self.candidates, odds_mode=self.odds_mode)
-        return build_spread_embeds(self.candidates, odds_mode=self.odds_mode)
-
-    def _sync_buttons(self) -> None:
-        for child in self.children:
-            if not isinstance(child, discord.ui.Button):
-                continue
-            if child.custom_id == "odds:result:next":
-                child.disabled = self.page == 2
-                child.label = "Next: Over/Under" if self.page == 0 else "Next: Spread"
-            elif child.custom_id == "odds:result:back":
-                child.disabled = self.page == 0
-                child.label = "Back: Recommendations" if self.page == 1 else "Back: Over/Under"
-
-    @discord.ui.button(label="Next: Over/Under", style=discord.ButtonStyle.secondary, custom_id="odds:result:next")
-    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if not await self._authorize(interaction):
-            return
-
-        if self.page < 2:
-            self.page += 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
-
-    @discord.ui.button(
-        label="Back: Recommendations",
-        style=discord.ButtonStyle.secondary,
-        custom_id="odds:result:back",
-        disabled=True,
-    )
-    async def previous_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if not await self._authorize(interaction):
-            return
-
-        if self.page > 0:
-            self.page -= 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embeds=self._current_embeds(), view=self)
-
-
 class OddsExtractionView(discord.ui.View):
     def __init__(
         self,
@@ -1313,16 +1321,13 @@ class OddsExtractionView(discord.ui.View):
             failed_files=pending.failed_files,
             odds_mode=pending.odds_mode,
         )
-        result_embed = build_odds_result_embed(
-            result.recommendations,
-            insufficient_data=len(result.recommendations) < 6,
-            odds_mode=pending.odds_mode,
-        )
-        result_view = OddsResultPaginationView(
-            invoker_user_id=interaction.user.id,
-            recommendations=result.recommendations,
-            candidates=pending.candidates,
-            insufficient_data=len(result.recommendations) < 6,
+        moneyline_recommendations = result.recommendations
+        over_under_recommendations = build_over_under_recommendations(pending.candidates)
+        spread_recommendations = build_spread_recommendations(pending.candidates)
+        result_embed = build_best_by_market_embed(
+            moneyline_recommendations=moneyline_recommendations,
+            over_under_recommendations=over_under_recommendations,
+            spread_recommendations=spread_recommendations,
             odds_mode=pending.odds_mode,
         )
 
@@ -1332,7 +1337,6 @@ class OddsExtractionView(discord.ui.View):
         await interaction.edit_original_response(embed=review_embed, view=self)
         await interaction.followup.send(
             embed=result_embed,
-            view=result_view,
             content=(
                 f"{interaction.user.mention} confirmed odds extraction. "
                 f"Raw: {result.raw_rows_written}, Clean: {result.clean_rows_written}, Ranked: {result.ranked_rows_written}."

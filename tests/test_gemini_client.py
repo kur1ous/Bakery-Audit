@@ -102,3 +102,39 @@ def test_extract_odds_from_image_parses_spread_rows() -> None:
     assert batch.bets[0].spread_line == "+1.5"
     assert batch.bets[1].spread_line == "-1.5"
     assert all(item.total_line == "" for item in batch.bets)
+
+
+def test_extract_odds_from_image_falls_back_to_source_image_site_when_available() -> None:
+    payload = (
+        '{"site":"","bets":['
+        '{"date":"2026-04-20","team":"TOR","against":"CLE","odds":"1.93","market":"total_over","total_line":"222.5","site":"","confidence":0.9}'
+        ']}'
+    )
+
+    class _FakeResponse:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _FakeModels:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def generate_content(self, **_: object) -> _FakeResponse:
+            return _FakeResponse(self._text)
+
+    class _FakeClient:
+        def __init__(self, text: str) -> None:
+            self.models = _FakeModels(text)
+
+    def _factory(*, api_key: str) -> _FakeClient:
+        return _FakeClient(payload)
+
+    service = GeminiExtractionService(
+        api_key="k1",
+        model_name="gemini-test",
+        client_factory=_factory,
+    )
+
+    batch = service.extract_odds_from_image(b"image", "image/png", "cloudbet-tor-cle.png")
+    assert batch.bets[0].site == "cloudbet"
+    assert batch.bets[0].source_image == "cloudbet-tor-cle.png"
