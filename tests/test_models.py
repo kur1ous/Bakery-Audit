@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from src.bot.models import BetExtraction, format_date_for_discord, normalize_money, normalize_odds, today_ymd
 
 
@@ -55,10 +57,44 @@ def test_format_date_for_discord_returns_yyyy_mm_dd_only() -> None:
 
 
 def test_format_date_for_discord_unparsed_defaults_to_today() -> None:
-    assert format_date_for_discord("tomorrow evening") == today_ymd()
+    assert format_date_for_discord("next week maybe") == today_ymd()
+
+
 def test_format_date_for_discord_parses_weekday_timestamp() -> None:
     assert format_date_for_discord("Thursday, April 02, 2026 8:00 PM") == "2026-04-02"
 
 
 def test_format_date_for_discord_prefers_legacy_pipe_left_date() -> None:
     assert format_date_for_discord("2026/04/02 | Thursday, April 02, 2026 8:00 PM") == "2026-04-02"
+
+
+def test_bet_extraction_resolves_relative_date_from_reference_date() -> None:
+    extraction = BetExtraction.model_validate(
+        {
+            "date": "tomorrow • 1:00 PM",
+            "team": "TOR",
+            "against": "CLE",
+            "odds": "2.10",
+            "stake": "10",
+            "return": "21",
+        },
+        context={"reference_date": date(2026, 4, 25)},
+    )
+
+    assert extraction.date == "2026-04-26"
+
+
+def test_bet_extraction_parses_month_day_without_year_from_reference_date() -> None:
+    extraction = BetExtraction.model_validate(
+        {
+            "date": "Apr 26 1:00 PM",
+            "team": "TOR",
+            "against": "CLE",
+            "odds": "2.10",
+            "stake": "10",
+            "return": "21",
+        },
+        context={"reference_date": date(2026, 4, 25)},
+    )
+
+    assert extraction.date == "2026-04-26"

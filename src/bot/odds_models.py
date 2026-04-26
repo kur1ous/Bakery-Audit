@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from .models import normalize_date_or_today, normalize_odds
+from .models import _context_reference_date, normalize_date_or_today, normalize_odds
 
 _REQUIRED_FIELDS = ("date", "team", "against", "odds")
 
@@ -99,8 +99,8 @@ class OddsCandidate(BaseModel):
         return max(0.0, min(1.0, candidate))
 
     @model_validator(mode="after")
-    def _finalize(self) -> "OddsCandidate":
-        self.date = normalize_date_or_today(self.date)
+    def _finalize(self, info: ValidationInfo) -> "OddsCandidate":
+        self.date = normalize_date_or_today(self.date, reference_date=_context_reference_date(info))
         self.team = _to_team_code(self.team)
         self.against = _to_team_code(self.against)
         self.market = (self.market or "moneyline").lower()

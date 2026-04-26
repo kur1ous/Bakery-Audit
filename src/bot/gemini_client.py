@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date, datetime
 from typing import Any, Callable, Protocol
 
 from google import genai
@@ -81,10 +82,23 @@ Rules:
 
 
 class ExtractionService(Protocol):
-    def extract_from_image(self, image_bytes: bytes, mime_type: str) -> BetExtraction:
+    def extract_from_image(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        *,
+        reference_date: date | datetime | None = None,
+    ) -> BetExtraction:
         ...
 
-    def extract_odds_from_image(self, image_bytes: bytes, mime_type: str, source_image: str = "") -> OddsExtractionBatch:
+    def extract_odds_from_image(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        source_image: str = "",
+        *,
+        reference_date: date | datetime | None = None,
+    ) -> OddsExtractionBatch:
         ...
 
 
@@ -105,7 +119,13 @@ class GeminiExtractionService:
         self._clients = [client_factory(api_key=key) for key in keys]
         self._model_name = model_name
 
-    def extract_from_image(self, image_bytes: bytes, mime_type: str) -> BetExtraction:
+    def extract_from_image(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        *,
+        reference_date: date | datetime | None = None,
+    ) -> BetExtraction:
         try:
             response = self._generate_content_with_failover(
                 contents=[
@@ -122,14 +142,21 @@ class GeminiExtractionService:
 
         try:
             payload = _extract_json(raw_text)
-            extraction = BetExtraction.model_validate(payload)
+            extraction = BetExtraction.model_validate(payload, context={"reference_date": reference_date})
             extraction.raw_text = raw_text
             return extraction
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:
             LOGGER.exception("Failed to parse Gemini extraction payload")
             raise GeminiExtractionError(f"Gemini response parse failed: {exc}") from exc
 
-    def extract_odds_from_image(self, image_bytes: bytes, mime_type: str, source_image: str = "") -> OddsExtractionBatch:
+    def extract_odds_from_image(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        source_image: str = "",
+        *,
+        reference_date: date | datetime | None = None,
+    ) -> OddsExtractionBatch:
         try:
             response = self._generate_content_with_failover(
                 contents=[
@@ -146,7 +173,7 @@ class GeminiExtractionService:
 
         try:
             payload = _extract_json(raw_text)
-            batch = OddsExtractionBatch.model_validate(payload)
+            batch = OddsExtractionBatch.model_validate(payload, context={"reference_date": reference_date})
             batch.raw_text = raw_text
 
             image_site = normalize_site_name(batch.site)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from src.bot.gemini_client import GeminiExtractionService, _extract_json
@@ -138,3 +140,41 @@ def test_extract_odds_from_image_falls_back_to_source_image_site_when_available(
     batch = service.extract_odds_from_image(b"image", "image/png", "cloudbet-tor-cle.png")
     assert batch.bets[0].site == "cloudbet"
     assert batch.bets[0].source_image == "cloudbet-tor-cle.png"
+
+
+def test_extract_from_image_uses_reference_date_for_relative_terms() -> None:
+    payload = (
+        '{"date":"tomorrow","team":"TOR","against":"CLE","odds":"2.10","stake":"10","return":"21","confidence":0.9}'
+    )
+
+    class _FakeResponse:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _FakeModels:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def generate_content(self, **_: object) -> _FakeResponse:
+            return _FakeResponse(self._text)
+
+    class _FakeClient:
+        def __init__(self, text: str) -> None:
+            self.models = _FakeModels(text)
+
+    def _factory(*, api_key: str) -> _FakeClient:
+        return _FakeClient(payload)
+
+    service = GeminiExtractionService(
+        api_key="k1",
+        model_name="gemini-test",
+        client_factory=_factory,
+    )
+
+    extraction = service.extract_from_image(
+        b"image",
+        "image/png",
+        reference_date=date(2026, 4, 25),
+    )
+
+    assert extraction.date == "2026-04-26"

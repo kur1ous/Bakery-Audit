@@ -1,0 +1,17 @@
+{
+  "workspace": "C:\\Users\\clasp\\Documents\\GitHub\\Bakery-Audit\\tmp\\presentations\\bakery-audit-overview",
+  "pptx": "C:\\Users\\clasp\\Documents\\GitHub\\Bakery-Audit\\tmp\\presentations\\bakery-audit-overview\\output\\output.pptx",
+  "checks": {
+    "output_hygiene": {
+      "output_dir": "C:\\Users\\clasp\\Documents\\GitHub\\Bakery-Audit\\tmp\\presentations\\bakery-audit-overview\\output",
+      "unexpected_files": [
+        "test.pptx"
+      ]
+    }
+  },
+  "failures": [
+    "PPTX package inspection failed: unzip -Z1 C:\\Users\\clasp\\Documents\\GitHub\\Bakery-Audit\\tmp\\presentations\\bakery-audit-overview\\output\\output.pptx failed",
+    "output/ contains non-deliverable files: test.pptx"
+  ],
+  "warnings": []
+}

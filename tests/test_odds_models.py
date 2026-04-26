@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from src.bot.odds_models import OddsCandidate, candidate_site_scope
 
 
@@ -96,3 +98,37 @@ def test_candidate_site_scope_uses_source_image_when_site_missing() -> None:
 
     assert candidate.site == "cloudbet"
     assert candidate_site_scope(candidate) == "site:cloudbet"
+
+
+def test_odds_candidate_resolves_relative_date_from_reference_date() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "today • 3:30 PM",
+            "team": "Phoenix Suns",
+            "against": "Oklahoma City Thunder",
+            "odds": "1.92",
+            "market": "spread",
+            "spread_line": "+9",
+            "site": "cloudbet",
+        },
+        context={"reference_date": date(2026, 4, 25)},
+    )
+
+    assert candidate.date == "2026-04-25"
+
+
+def test_odds_candidate_parses_month_day_without_year_from_reference_date() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "Apr 26 1:00 PM",
+            "team": "Toronto Raptors",
+            "against": "Cleveland Cavaliers",
+            "odds": "1.95",
+            "market": "spread",
+            "spread_line": "+3.5",
+            "site": "xbet",
+        },
+        context={"reference_date": date(2026, 4, 25)},
+    )
+
+    assert candidate.date == "2026-04-26"

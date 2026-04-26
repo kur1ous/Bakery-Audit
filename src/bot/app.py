@@ -13,6 +13,7 @@ from .config import Settings
 from .confirmation_log import ConfirmationLogger
 from .discord_ui import CURRENCY_USD, ExtractionView, build_extraction_embed, detect_hedge_pair
 from .gemini_client import ExtractionService, GeminiExtractionError
+from .image_metadata import extract_reference_date
 from .odds_models import OddsCandidate
 from .odds_pipeline import OddsPipelineWriter
 from .odds_ui import OddsExtractionView, build_odds_review_embed
@@ -98,11 +99,13 @@ class EVBetBot(commands.Bot):
                     mime_type = attachment.content_type or _guess_mime_type(attachment.filename)
                     if not mime_type.startswith("image/"):
                         raise ValueError("Attachment is not an image")
+                    reference_date = extract_reference_date(image_bytes, mime_type)
 
                     extraction = await asyncio.to_thread(
                         self.extraction_service.extract_from_image,
                         image_bytes,
                         mime_type,
+                        reference_date=reference_date,
                     )
                     extractions.append(extraction)
                 except GeminiExtractionError as exc:
@@ -181,12 +184,14 @@ class EVBetBot(commands.Bot):
                     mime_type = attachment.content_type or _guess_mime_type(attachment.filename)
                     if not mime_type.startswith("image/"):
                         raise ValueError("Attachment is not an image")
+                    reference_date = extract_reference_date(image_bytes, mime_type)
 
                     batch = await asyncio.to_thread(
                         self.extraction_service.extract_odds_from_image,
                         image_bytes,
                         mime_type,
                         attachment.filename or "",
+                        reference_date=reference_date,
                     )
                     candidates.extend(batch.bets)
                 except GeminiExtractionError as exc:

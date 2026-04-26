@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 _REQUIRED_FIELDS = ("date", "team", "against", "odds", "stake", "return_amount")
@@ -28,6 +28,32 @@ _DATE_PATTERNS = (
     "%B %d %Y",
     "%b %d, %Y",
     "%B %d, %Y",
+)
+_DATE_PATTERNS_NO_YEAR = (
+    "%b %d %I:%M %p",
+    "%B %d %I:%M %p",
+    "%b %d, %I:%M %p",
+    "%B %d, %I:%M %p",
+    "%a %b %d %I:%M %p",
+    "%A %b %d %I:%M %p",
+    "%a, %b %d %I:%M %p",
+    "%A, %b %d %I:%M %p",
+    "%a %B %d %I:%M %p",
+    "%A %B %d %I:%M %p",
+    "%a, %B %d %I:%M %p",
+    "%A, %B %d %I:%M %p",
+    "%b %d",
+    "%B %d",
+    "%b %d,",
+    "%B %d,",
+    "%a %b %d",
+    "%A %b %d",
+    "%a, %b %d",
+    "%A, %b %d",
+    "%a %B %d",
+    "%A %B %d",
+    "%a, %B %d",
+    "%A, %B %d",
 )
 
 
@@ -79,9 +105,9 @@ class BetExtraction(BaseModel):
         return max(0.0, min(1.0, candidate))
 
     @model_validator(mode="after")
-    def _finalize(self) -> "BetExtraction":
+    def _finalize(self, info: ValidationInfo) -> "BetExtraction":
         # Always keep date in yyyy-mm-dd format. If missing/unparseable, default to today.
-        self.date = normalize_date_or_today(self.date)
+        self.date = normalize_date_or_today(self.date, reference_date=_context_reference_date(info))
 
         if not self.missing_fields:
             inferred_missing = [field for field in _REQUIRED_FIELDS if not getattr(self, field)]
@@ -131,31 +157,37 @@ def format_date_for_discord(date_text: Any) -> str:
     return normalize_date_or_today(date_text)
 
 
-def normalize_date_or_today(date_text: Any) -> str:
+def normalize_date_or_today(date_text: Any, *, reference_date: date | datetime | None = None) -> str:
     raw = "" if date_text is None else str(date_text).strip()
     if not raw:
-        return today_ymd()
+        return today_ymd(reference_date=reference_date)
 
-    parsed = parse_date(raw)
+    parsed = parse_date(raw, reference_date=reference_date)
     if not parsed:
-        return today_ymd()
+        return today_ymd(reference_date=reference_date)
 
     return parsed.strftime("%Y-%m-%d")
 
 
-def today_ymd() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+def today_ymd(reference_date: date | datetime | None = None) -> str:
+    return _coerce_reference_date(reference_date).strftime("%Y-%m-%d")
 
 
-def parse_date(text: str) -> datetime | None:
+def parse_date(text: str, *, reference_date: date | datetime | None = None) -> datetime | None:
     candidate = text.strip()
     if not candidate:
         return None
+
+    reference_day = _coerce_reference_date(reference_date)
 
     # Older bot versions stored "YYYY/MM/DD | Thursday, April 02, 2026 8:00 PM".
     # Prefer the canonical date portion when this appears.
     if "|" in candidate:
         candidate = candidate.split("|", 1)[0].strip()
+
+    relative_match = _parse_relative_date(candidate, reference_day)
+    if relative_match:
+        return datetime.combine(relative_match, datetime.min.time())
 
     try:
         normalized_iso = candidate.replace("Z", "+00:00")
@@ -169,7 +201,44 @@ def parse_date(text: str) -> datetime | None:
         except ValueError:
             continue
 
+    for pattern in _DATE_PATTERNS_NO_YEAR:
+        try:
+            parsed = datetime.strptime(candidate, pattern)
+            return parsed.replace(year=reference_day.year)
+        except ValueError:
+            continue
+
     return None
+
+
+def _parse_relative_date(text: str, reference_date: date) -> date | None:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    match = re.match(r"^(today|tomorrow|yesterday)\b", normalized)
+    if not match:
+        return None
+
+    token = match.group(1)
+    if token == "today":
+        return reference_date
+    if token == "tomorrow":
+        return reference_date + timedelta(days=1)
+    if token == "yesterday":
+        return reference_date - timedelta(days=1)
+    return None
+
+
+def _coerce_reference_date(reference_date: date | datetime | None) -> date:
+    if isinstance(reference_date, datetime):
+        return reference_date.date()
+    if isinstance(reference_date, date):
+        return reference_date
+    return datetime.now().date()
+
+
+def _context_reference_date(info: ValidationInfo) -> date | datetime | None:
+    if not info.context:
+        return None
+    return info.context.get("reference_date")
 
 
 def normalize_odds(value: Any) -> str:
