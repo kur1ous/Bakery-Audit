@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from src.bot.odds_models import OddsCandidate, candidate_site_scope
+from src.bot.odds_models import OddsCandidate, candidate_site_scope, reconcile_candidate_date_years
 
 
 def test_odds_candidate_normalizes_date_team_and_site() -> None:
@@ -132,3 +132,42 @@ def test_odds_candidate_parses_month_day_without_year_from_reference_date() -> N
     )
 
     assert candidate.date == "2026-04-26"
+
+
+def test_odds_candidate_parses_weekday_day_month_sportsbook_format() -> None:
+    candidate = OddsCandidate.model_validate(
+        {
+            "date": "Mon 27 Apr • 8:00 PM",
+            "team": "Orlando Magic",
+            "against": "Detroit Pistons",
+            "odds": "2.20",
+            "market": "moneyline",
+            "site": "cloudbet",
+        },
+        context={"reference_date": date(2026, 4, 25)},
+    )
+
+    assert candidate.date == "2026-04-27"
+
+
+def test_reconcile_candidate_date_years_aligns_same_matchup_month_day_across_sites() -> None:
+    candidates = [
+        OddsCandidate(date="2024-04-27", team="BOS", against="PHI", odds="1.30", market="moneyline", site="cloudbet"),
+        OddsCandidate(date="2026-04-27", team="PHI", against="BOS", odds="3.47", market="moneyline", site="xbet"),
+        OddsCandidate(date="2024-04-27", team="BOS", against="PHI", odds="1.92", market="spread", spread_line="-7.5", site="cloudbet"),
+    ]
+
+    reconcile_candidate_date_years(candidates)
+
+    assert [candidate.date for candidate in candidates] == ["2026-04-27", "2026-04-27", "2026-04-27"]
+
+
+def test_reconcile_candidate_date_years_does_not_change_different_month_day() -> None:
+    candidates = [
+        OddsCandidate(date="2024-04-27", team="BOS", against="PHI", odds="1.30", market="moneyline", site="cloudbet"),
+        OddsCandidate(date="2026-04-28", team="PHI", against="BOS", odds="3.47", market="moneyline", site="xbet"),
+    ]
+
+    reconcile_candidate_date_years(candidates)
+
+    assert [candidate.date for candidate in candidates] == ["2024-04-27", "2026-04-28"]

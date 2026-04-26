@@ -1,6 +1,6 @@
 # Development Log
 
-Last Updated: 2026-04-24
+Last Updated: 2026-04-25
 Owner: Bread Audit bot project
 
 ## Update Policy
@@ -44,6 +44,13 @@ Owner: Bread Audit bot project
   - `ODDS_RANKED_WORKSHEET` (default `odds_ranked`)
 
 ## Recent Changes
+
+### 2026-04-25
+- Added sportsbook date parsing for day-month formats such as `Mon 27 Apr`, `Tue 28 Apr`, and variants with visible dot separators before the time.
+- Added regression coverage so `Mon 27 Apr` and `Apr 27` normalize to the same date and can produce clean cross-site odds pairs.
+- Updated market headline selection so bonus mode prioritizes profit, real mode prioritizes rake, and combined mode prioritizes profit before rake.
+- Added moneyline diagnostics to the odds result embed when extracted rows cannot produce a clean pair, including date/site counts and possible cross-date matchup drift.
+- Added odds batch date-year reconciliation so the same matchup on the same month/day can align across sites when one screenshot's metadata puts relative labels in the wrong year.
 
 ### 2026-04-24
 - Updated moneyline odds calculations to follow the workbook formulas used by the client:

@@ -268,6 +268,133 @@ def test_build_best_by_market_embed_shows_one_pick_per_market() -> None:
     assert "-1.5" in next(field for field in embed.fields if field.name == "Best Spread").value
 
 
+def test_build_best_by_market_embed_prioritizes_profit_in_bonus_mode() -> None:
+    moneyline_recommendations = [
+        OddsRecommendation(
+            metric="roi",
+            rank=1,
+            date="2026-04-27",
+            bet_team="ORL",
+            hedge_team="DET",
+            bet_site="xbet",
+            hedge_site="cloudbet",
+            odds_bet=2.18,
+            odds_hedge=1.71,
+            b_stake=100.0,
+            h_hedge=127.49,
+            total_bet=227.49,
+            total_return=218.0,
+            net=48.99,
+            roi=0.71,
+            rake=-0.044,
+            recommendation="BET",
+        ),
+        OddsRecommendation(
+            metric="profit",
+            rank=1,
+            date="2026-04-26",
+            bet_team="PHI",
+            hedge_team="BOS",
+            bet_site="xbet",
+            hedge_site="cloudbet",
+            odds_bet=3.47,
+            odds_hedge=1.30,
+            b_stake=100.0,
+            h_hedge=266.92,
+            total_bet=366.92,
+            total_return=347.0,
+            net=57.00,
+            roi=0.30,
+            rake=-0.058,
+            recommendation="BET",
+        ),
+    ]
+
+    embed = build_best_by_market_embed(
+        moneyline_recommendations=moneyline_recommendations,
+        over_under_recommendations=[],
+        spread_recommendations=[],
+        odds_mode="bonus",
+    )
+
+    best_moneyline = next(field for field in embed.fields if field.name == "Best Moneyline")
+    assert best_moneyline.value.startswith("1) Bet **PHI**")
+
+
+def test_build_best_by_market_embed_prioritizes_rake_in_real_mode() -> None:
+    moneyline_recommendations = [
+        OddsRecommendation(
+            metric="profit",
+            rank=1,
+            date="2026-04-26",
+            bet_team="PHI",
+            hedge_team="BOS",
+            bet_site="xbet",
+            hedge_site="cloudbet",
+            odds_bet=3.47,
+            odds_hedge=1.30,
+            b_stake=100.0,
+            h_hedge=266.92,
+            total_bet=366.92,
+            total_return=347.0,
+            net=57.00,
+            roi=0.30,
+            rake=-0.058,
+            recommendation="BET",
+        ),
+        OddsRecommendation(
+            metric="rake",
+            rank=1,
+            date="2026-04-27",
+            bet_team="ORL",
+            hedge_team="DET",
+            bet_site="xbet",
+            hedge_site="cloudbet",
+            odds_bet=2.18,
+            odds_hedge=1.71,
+            b_stake=100.0,
+            h_hedge=127.49,
+            total_bet=227.49,
+            total_return=218.0,
+            net=48.99,
+            roi=0.71,
+            rake=-0.044,
+            recommendation="BET",
+        ),
+    ]
+
+    embed = build_best_by_market_embed(
+        moneyline_recommendations=moneyline_recommendations,
+        over_under_recommendations=[],
+        spread_recommendations=[],
+        odds_mode="real",
+    )
+
+    best_moneyline = next(field for field in embed.fields if field.name == "Best Moneyline")
+    assert best_moneyline.value.startswith("1) Bet **ORL**")
+
+
+def test_build_best_by_market_embed_explains_moneyline_date_drift() -> None:
+    candidates = [
+        OddsCandidate(date="2026-04-26", team="BOS", against="PHI", odds="1.30", market="moneyline", site="cloudbet"),
+        OddsCandidate(date="2026-04-27", team="PHI", against="BOS", odds="3.47", market="moneyline", site="xbet"),
+    ]
+
+    embed = build_best_by_market_embed(
+        moneyline_recommendations=[],
+        over_under_recommendations=[],
+        spread_recommendations=[],
+        candidates=candidates,
+        odds_mode="both",
+    )
+
+    diagnostics = next(field for field in embed.fields if field.name == "Moneyline Diagnostics")
+    assert "Moneyline rows: 2" in diagnostics.value
+    assert "Exact reverse groups: 0; cross-site groups: 0" in diagnostics.value
+    assert "Possible date drift:" in diagnostics.value
+    assert "BOS/PHI: 2026-04-26 (cloudbet), 2026-04-27 (xbet)" in diagnostics.value
+
+
 def test_build_over_under_recommendations_returns_ranked_metrics() -> None:
     candidates = [
         OddsCandidate(

@@ -100,12 +100,13 @@ def build_best_by_market_embed(
     moneyline_recommendations: list[OddsRecommendation],
     over_under_recommendations: list[OddsRecommendation],
     spread_recommendations: list[OddsRecommendation],
+    candidates: list[OddsCandidate] | None = None,
     odds_mode: str = "both",
 ) -> discord.Embed:
     sections = [
-        ("Best Moneyline", _select_best_market_pick(moneyline_recommendations), _format_pick_block),
-        ("Best O/U", _select_best_market_pick(over_under_recommendations), _format_ou_pick_block),
-        ("Best Spread", _select_best_market_pick(spread_recommendations), _format_spread_pick_block),
+        ("Best Moneyline", _select_best_market_pick(moneyline_recommendations, odds_mode=odds_mode), _format_pick_block),
+        ("Best O/U", _select_best_market_pick(over_under_recommendations, odds_mode=odds_mode), _format_ou_pick_block),
+        ("Best Spread", _select_best_market_pick(spread_recommendations, odds_mode=odds_mode), _format_spread_pick_block),
     ]
     available_count = sum(1 for _, pick, _ in sections if pick is not None)
     color = discord.Color.green() if available_count else discord.Color.orange()
@@ -115,6 +116,11 @@ def build_best_by_market_embed(
     for label, pick, formatter in sections:
         value = formatter(pick, odds_mode=odds_mode) if pick else "No picks available"
         embed.add_field(name=label, value=value, inline=False)
+
+    if not _select_best_market_pick(moneyline_recommendations, odds_mode=odds_mode) and candidates is not None:
+        note = _build_moneyline_no_picks_note(candidates)
+        if note:
+            embed.add_field(name="Moneyline Diagnostics", value=note, inline=False)
 
     if available_count < 3:
         embed.add_field(
@@ -264,13 +270,125 @@ def build_combined_recommendations(candidates: list[OddsCandidate], *, moneyline
     return select_top_recommendations(combined_pool)
 
 
-def _select_best_market_pick(recommendations: list[OddsRecommendation]) -> OddsRecommendation | None:
+def _select_best_market_pick(
+    recommendations: list[OddsRecommendation],
+    *,
+    odds_mode: str = "both",
+) -> OddsRecommendation | None:
     if not recommendations:
         return None
-    roi_top = next((item for item in recommendations if item.metric == "roi" and item.rank == 1), None)
-    if roi_top is not None:
-        return roi_top
+
+    for metric in _best_market_metric_priority(odds_mode):
+        metric_top = next((item for item in recommendations if item.metric == metric and item.rank == 1), None)
+        if metric_top is not None:
+            return metric_top
     return recommendations[0]
+
+
+def _best_market_metric_priority(odds_mode: str) -> tuple[str, ...]:
+    normalized_mode = (odds_mode or "both").strip().lower()
+    if normalized_mode == "real":
+        return ("rake", "profit", "roi")
+    if normalized_mode == "bonus":
+        return ("profit", "roi", "rake")
+    return ("profit", "rake", "roi")
+
+
+def _build_moneyline_no_picks_note(candidates: list[OddsCandidate]) -> str | None:
+    moneylines: list[OddsCandidate] = []
+    for candidate in candidates:
+        if candidate.market != "moneyline":
+            continue
+        odds_value = _to_float(candidate.odds)
+        if odds_value is None or odds_value <= 1:
+            continue
+        if not candidate.date or not candidate.team or not candidate.against:
+            continue
+        moneylines.append(candidate)
+
+    if not moneylines:
+        return "No valid moneyline rows were extracted."
+
+    date_counts: dict[str, int] = {}
+    site_counts: dict[str, int] = {}
+    grouped: dict[str, dict[str, list[OddsCandidate]]] = {}
+    matchup_dates: dict[str, dict[str, set[str]]] = {}
+
+    for candidate in moneylines:
+        date_counts[candidate.date] = date_counts.get(candidate.date, 0) + 1
+        site = candidate.site or "unknown-site"
+        site_counts[site] = site_counts.get(site, 0) + 1
+
+        matchup_key = _canonical_market_key(candidate.team, candidate.against)
+        exact_key = f"{candidate.date}|{matchup_key}"
+        side_key = f"{candidate.team}->{candidate.against}"
+        grouped.setdefault(exact_key, {}).setdefault(side_key, []).append(candidate)
+        matchup_dates.setdefault(matchup_key, {}).setdefault(candidate.date, set()).add(site)
+
+    exact_reverse_groups = 0
+    exact_cross_site_groups = 0
+    for sides in grouped.values():
+        side_keys = set(sides)
+        for side_key in side_keys:
+            team, against = side_key.split("->", 1)
+            reverse_key = f"{against}->{team}"
+            if side_key > reverse_key or reverse_key not in sides:
+                continue
+            exact_reverse_groups += 1
+            if _has_cross_site_pair(sides[side_key], sides[reverse_key]):
+                exact_cross_site_groups += 1
+
+    lines = [
+        f"Moneyline rows: {len(moneylines)}",
+        f"Dates: {_format_count_summary(date_counts)}",
+        f"Sites: {_format_count_summary(site_counts)}",
+        f"Exact reverse groups: {exact_reverse_groups}; cross-site groups: {exact_cross_site_groups}",
+    ]
+
+    drift_lines = _format_date_drift_examples(matchup_dates)
+    if drift_lines:
+        lines.append("Possible date drift:")
+        lines.extend(drift_lines)
+    else:
+        lines.append("No obvious cross-date duplicate matchups found.")
+
+    return "\n".join(lines[:8])
+
+
+def _has_cross_site_pair(left: list[OddsCandidate], right: list[OddsCandidate]) -> bool:
+    for left_candidate in left:
+        for right_candidate in right:
+            if candidate_site_scope(left_candidate) != candidate_site_scope(right_candidate):
+                return True
+    return False
+
+
+def _canonical_market_key(team: str, against: str) -> str:
+    left, right = sorted([team, against])
+    return f"{left}/{right}"
+
+
+def _format_count_summary(counts: dict[str, int], *, limit: int = 5) -> str:
+    if not counts:
+        return "none"
+    parts = [f"{key}={value}" for key, value in sorted(counts.items())[:limit]]
+    if len(counts) > limit:
+        parts.append(f"+{len(counts) - limit} more")
+    return ", ".join(parts)
+
+
+def _format_date_drift_examples(matchup_dates: dict[str, dict[str, set[str]]]) -> list[str]:
+    examples: list[str] = []
+    for matchup, dates in sorted(matchup_dates.items()):
+        if len(dates) < 2:
+            continue
+        date_parts = []
+        for date_key, sites in sorted(dates.items()):
+            date_parts.append(f"{date_key} ({'/'.join(sorted(sites))})")
+        examples.append(f"{matchup}: {', '.join(date_parts)}")
+        if len(examples) == 3:
+            break
+    return examples
 
 
 def _analyze_spread_candidates(candidates: list[OddsCandidate], *, b_stake: float = 100.0) -> dict[str, object]:
@@ -1328,6 +1446,7 @@ class OddsExtractionView(discord.ui.View):
             moneyline_recommendations=moneyline_recommendations,
             over_under_recommendations=over_under_recommendations,
             spread_recommendations=spread_recommendations,
+            candidates=pending.candidates,
             odds_mode=pending.odds_mode,
         )
 

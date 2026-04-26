@@ -32,8 +32,12 @@ _DATE_PATTERNS = (
 _DATE_PATTERNS_NO_YEAR = (
     "%b %d %I:%M %p",
     "%B %d %I:%M %p",
+    "%d %b %I:%M %p",
+    "%d %B %I:%M %p",
     "%b %d, %I:%M %p",
     "%B %d, %I:%M %p",
+    "%d %b, %I:%M %p",
+    "%d %B, %I:%M %p",
     "%a %b %d %I:%M %p",
     "%A %b %d %I:%M %p",
     "%a, %b %d %I:%M %p",
@@ -42,10 +46,22 @@ _DATE_PATTERNS_NO_YEAR = (
     "%A %B %d %I:%M %p",
     "%a, %B %d %I:%M %p",
     "%A, %B %d %I:%M %p",
+    "%a %d %b %I:%M %p",
+    "%A %d %b %I:%M %p",
+    "%a, %d %b %I:%M %p",
+    "%A, %d %b %I:%M %p",
+    "%a %d %B %I:%M %p",
+    "%A %d %B %I:%M %p",
+    "%a, %d %B %I:%M %p",
+    "%A, %d %B %I:%M %p",
     "%b %d",
     "%B %d",
+    "%d %b",
+    "%d %B",
     "%b %d,",
     "%B %d,",
+    "%d %b,",
+    "%d %B,",
     "%a %b %d",
     "%A %b %d",
     "%a, %b %d",
@@ -54,6 +70,14 @@ _DATE_PATTERNS_NO_YEAR = (
     "%A %B %d",
     "%a, %B %d",
     "%A, %B %d",
+    "%a %d %b",
+    "%A %d %b",
+    "%a, %d %b",
+    "%A, %d %b",
+    "%a %d %B",
+    "%A %d %B",
+    "%a, %d %B",
+    "%A, %d %B",
 )
 
 
@@ -185,6 +209,8 @@ def parse_date(text: str, *, reference_date: date | datetime | None = None) -> d
     if "|" in candidate:
         candidate = candidate.split("|", 1)[0].strip()
 
+    candidate = _normalize_date_candidate(candidate)
+
     relative_match = _parse_relative_date(candidate, reference_day)
     if relative_match:
         return datetime.combine(relative_match, datetime.min.time())
@@ -209,6 +235,11 @@ def parse_date(text: str, *, reference_date: date | datetime | None = None) -> d
             continue
 
     return None
+
+
+def _normalize_date_candidate(text: str) -> str:
+    normalized = text.replace("â€¢", " ").replace("•", " ").replace("·", " ")
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _parse_relative_date(text: str, reference_date: date) -> date | None:

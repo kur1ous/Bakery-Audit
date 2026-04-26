@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from src.bot.models import BetExtraction, format_date_for_discord, normalize_money, normalize_odds, today_ymd
+from src.bot.models import BetExtraction, format_date_for_discord, normalize_date_or_today, normalize_money, normalize_odds, today_ymd
 
 
 def test_normalize_odds_from_text() -> None:
@@ -98,3 +98,9 @@ def test_bet_extraction_parses_month_day_without_year_from_reference_date() -> N
     )
 
     assert extraction.date == "2026-04-26"
+
+
+def test_normalize_date_parses_weekday_day_month_sportsbook_format() -> None:
+    assert normalize_date_or_today("Mon 27 Apr • 8:00 PM", reference_date=date(2026, 4, 25)) == "2026-04-27"
+    assert normalize_date_or_today("Tue 28 Apr • 8:00 PM", reference_date=date(2026, 4, 25)) == "2026-04-28"
+    assert normalize_date_or_today("Sun 26 Apr", reference_date=date(2026, 4, 25)) == "2026-04-26"

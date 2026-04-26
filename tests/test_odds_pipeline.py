@@ -124,6 +124,33 @@ def test_build_clean_rows_match_workbook_example() -> None:
     assert pool[0].rake == pytest.approx(-0.043717, abs=0.000001)
 
 
+def test_build_clean_rows_pairs_sportsbook_day_month_dates() -> None:
+    candidates = [
+        OddsCandidate(
+            date="Mon 27 Apr • 8:00 PM",
+            team="Orlando Magic",
+            against="Detroit Pistons",
+            odds="2.20",
+            market="moneyline",
+            site="cloudbet",
+        ),
+        OddsCandidate(
+            date="Apr 27 8:00 PM",
+            team="Detroit Pistons",
+            against="Orlando Magic",
+            odds="1.69",
+            market="moneyline",
+            site="xbet",
+        ),
+    ]
+
+    rows, pool = build_clean_rows(_ctx(), candidates)
+
+    assert len(rows) == 1
+    assert len(pool) == 1
+    assert rows[0][2] == "2026-04-27"
+
+
 def test_build_clean_rows_prefers_non_cloudbet_bonus_side() -> None:
     candidates = [
         OddsCandidate(date="2026-04-24", team="PIT", against="PHI", odds="1.85", market="moneyline", site="xbet"),

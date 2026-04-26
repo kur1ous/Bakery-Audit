@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -193,6 +194,60 @@ def candidate_site_scope(candidate: OddsCandidate) -> str:
         return f"image:{source_key}"
 
     return ""
+
+
+def reconcile_candidate_date_years(candidates: list[OddsCandidate]) -> list[OddsCandidate]:
+    groups: dict[tuple[str, int, int], list[OddsCandidate]] = {}
+
+    for candidate in candidates:
+        parsed = _parse_normalized_date(candidate.date)
+        if parsed is None or not candidate.team or not candidate.against:
+            continue
+        matchup_key = _canonical_matchup_key(candidate.team, candidate.against)
+        groups.setdefault((matchup_key, parsed.month, parsed.day), []).append(candidate)
+
+    for group in groups.values():
+        years = [_parse_normalized_date(candidate.date).year for candidate in group if _parse_normalized_date(candidate.date)]
+        if len(set(years)) < 2:
+            continue
+
+        target_year = _pick_reconciled_year(group)
+        for candidate in group:
+            parsed = _parse_normalized_date(candidate.date)
+            if parsed is None or parsed.year == target_year:
+                continue
+            candidate.date = parsed.replace(year=target_year).strftime("%Y-%m-%d")
+
+    return candidates
+
+
+def _pick_reconciled_year(candidates: list[OddsCandidate]) -> int:
+    site_counts_by_year: dict[int, set[str]] = {}
+    row_counts_by_year: dict[int, int] = {}
+
+    for candidate in candidates:
+        parsed = _parse_normalized_date(candidate.date)
+        if parsed is None:
+            continue
+        row_counts_by_year[parsed.year] = row_counts_by_year.get(parsed.year, 0) + 1
+        site_counts_by_year.setdefault(parsed.year, set()).add(candidate_site_scope(candidate))
+
+    return max(
+        row_counts_by_year,
+        key=lambda year: (len(site_counts_by_year.get(year, set())), year, row_counts_by_year[year]),
+    )
+
+
+def _parse_normalized_date(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _canonical_matchup_key(team: str, against: str) -> str:
+    left, right = sorted([team, against])
+    return f"{left}|{right}"
 
 
 def _normalize_site(value: str) -> str:
